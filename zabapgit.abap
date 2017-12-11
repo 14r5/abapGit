@@ -108,7 +108,7 @@ INTERFACE zif_abapgit_definitions
   .
 
   CONSTANTS gc_xml_version TYPE string VALUE 'v1.0.0' ##NO_TEXT.
-  CONSTANTS gc_abap_version TYPE string VALUE 'v1.50.0' ##NO_TEXT.
+  CONSTANTS gc_abap_version TYPE string VALUE 'v1.50.1' ##NO_TEXT.
 
   TYPES:
     ty_type    TYPE c LENGTH 6 .
@@ -21694,7 +21694,7 @@ CLASS lcl_object_docv IMPLEMENTATION.
   METHOD lif_object~changed_by.
     rv_user = read( )-head-tdluser.
     IF rv_user IS INITIAL.
-      rv_user = c_user_unkown.
+      rv_user = c_user_unknown.
     ENDIF.
   ENDMETHOD.                    "lif_object~changed_by
 
@@ -55831,5 +55831,5 @@ AT SELECTION-SCREEN.
   ENDIF.
 
 ****************************************************
-* abapmerge - 2017-12-11T17:13:02.431Z
+* abapmerge - 2017-12-11T17:15:05.107Z
 ****************************************************
