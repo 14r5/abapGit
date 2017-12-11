@@ -21693,6 +21693,9 @@ CLASS lcl_object_docv IMPLEMENTATION.
 
   METHOD lif_object~changed_by.
     rv_user = read( )-head-tdluser.
+    IF rv_user IS INITIAL.
+      rv_user = c_user_unkown.
+    ENDIF.
   ENDMETHOD.                    "lif_object~changed_by
 
   METHOD read.
@@ -55828,5 +55831,5 @@ AT SELECTION-SCREEN.
   ENDIF.
 
 ****************************************************
-* abapmerge - 2017-12-11T17:10:51.165Z
+* abapmerge - 2017-12-11T17:13:02.431Z
 ****************************************************
