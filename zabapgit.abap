@@ -20922,7 +20922,7 @@ CLASS lcl_object_devc IMPLEMENTATION.
           invalid_translation_depth  = 18
           wrong_mainpack_value       = 19
           superpackage_invalid       = 20
-          error_in_cts_checks        = 21
+*          error_in_cts_checks        = 21 downport, does not exist in 7.31
           OTHERS                     = 22 ).
       IF sy-subrc <> 0.
         zcx_abapgit_exception=>raise( |Error from CL_PACKAGE_FACTORY=>CREATE_NEW_PACKAGE { sy-subrc }| ).
@@ -51825,7 +51825,7 @@ CLASS ltcl_url IMPLEMENTATION.
   METHOD repo_error.
 
     TRY.
-        zcl_abapgit_url=>host( 'not a real url' ).                  "#EC NOTEXT
+        zcl_abapgit_url=>host( 'not a real url' ).          "#EC NOTEXT
         cl_abap_unit_assert=>fail( ).
       CATCH zcx_abapgit_exception.                      "#EC NO_HANDLER
     ENDTRY.
@@ -53768,16 +53768,20 @@ CLASS ltcl_oo_serialize IMPLEMENTATION.
 
   METHOD _then_should_be_skipped.
 
-    cl_abap_unit_assert=>assert_true( act = mv_skip_testclass
-                                      msg = |Testclass should be skipped| ).
+    cl_abap_unit_assert=>assert_equals(
+      act = mv_skip_testclass
+      exp = abap_true
+      msg = |Testclass should be skipped| ).
 
   ENDMETHOD.
 
 
   METHOD _then_should_not_be_skipped.
 
-    cl_abap_unit_assert=>assert_false( act = mv_skip_testclass
-                                       msg = |Testclass should not be skipped| ).
+    cl_abap_unit_assert=>assert_equals(
+      act = mv_skip_testclass
+      exp = abap_false
+      msg = |Testclass should not be skipped| ).
 
   ENDMETHOD.
 
@@ -55849,5 +55853,5 @@ AT SELECTION-SCREEN.
   ENDIF.
 
 ****************************************************
-* abapmerge - 2017-12-19T16:37:18.366Z
+* abapmerge - 2017-12-19T16:43:59.358Z
 ****************************************************
