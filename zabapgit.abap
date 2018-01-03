@@ -340,6 +340,8 @@ INTERFACE zif_abapgit_definitions
       git_branch_create        TYPE string VALUE 'git_branch_create',
       git_branch_switch        TYPE string VALUE 'git_branch_switch',
       git_branch_delete        TYPE string VALUE 'git_branch_delete',
+      git_tag_create           TYPE string VALUE 'git_tag_create',
+      git_tag_delete           TYPE string VALUE 'git_tag_delete',
       git_commit               TYPE string VALUE 'git_commit',
 
       db_delete                TYPE string VALUE 'db_delete',
@@ -357,6 +359,7 @@ INTERFACE zif_abapgit_definitions
       go_stage                 TYPE string VALUE 'go_stage',
       go_commit                TYPE string VALUE 'go_commit',
       go_branch_overview       TYPE string VALUE 'go_branch_overview',
+      go_tag_overview          TYPE string VALUE 'go_tag_overview',
       go_playground            TYPE string VALUE 'go_playground',
       go_debuginfo             TYPE string VALUE 'go_debuginfo',
       go_settings              TYPE string VALUE 'go_settings',
@@ -371,6 +374,8 @@ INTERFACE zif_abapgit_definitions
       active   TYPE r3state VALUE 'A',
       inactive TYPE r3state VALUE 'I',
     END OF gc_version.
+
+  CONSTANTS: gc_tag_prefix TYPE string VALUE 'refs/tags/'.
 
 ENDINTERFACE.
 CLASS zcl_abapgit_time DEFINITION
@@ -10907,6 +10912,8 @@ CLASS lcl_git_transport IMPLEMENTATION.
       zcx_abapgit_exception=>raise( 'pre-receive hook declined' ).
     ELSEIF lv_string CP '*funny refname*'.
       zcx_abapgit_exception=>raise( 'funny refname' ).
+    ELSEIF lv_string CP '*failed to update ref*'.
+      zcx_abapgit_exception=>raise( 'failed to update ref' ).
     ENDIF.
 
   ENDMETHOD.                    "receive_pack
@@ -11763,9 +11770,20 @@ CLASS lcl_git_porcelain DEFINITION FINAL FRIENDS ltcl_git_porcelain.
                 iv_from TYPE zif_abapgit_definitions=>ty_sha1
       RAISING   zcx_abapgit_exception.
 
+    CLASS-METHODS create_tag
+      IMPORTING io_repo TYPE REF TO lcl_repo_online
+                iv_name TYPE string
+                iv_from TYPE zif_abapgit_definitions=>ty_sha1
+      RAISING   zcx_abapgit_exception.
+
     CLASS-METHODS delete_branch
       IMPORTING io_repo   TYPE REF TO lcl_repo_online
                 is_branch TYPE lcl_git_branch_list=>ty_git_branch
+      RAISING   zcx_abapgit_exception.
+
+    CLASS-METHODS delete_tag
+      IMPORTING io_repo TYPE REF TO lcl_repo_online
+                is_tag  TYPE lcl_git_branch_list=>ty_git_branch
       RAISING   zcx_abapgit_exception.
 
     CLASS-METHODS full_tree
@@ -11952,6 +11970,25 @@ CLASS lcl_git_porcelain IMPLEMENTATION.
 
   ENDMETHOD.
 
+  METHOD delete_tag.
+
+    DATA: lt_objects TYPE zif_abapgit_definitions=>ty_objects_tt,
+          lv_pack    TYPE xstring.
+
+
+* "client MUST send an empty packfile"
+* https://github.com/git/git/blob/master/Documentation/technical/pack-protocol.txt#L514
+    lv_pack = lcl_git_pack=>encode( lt_objects ).
+
+    lcl_git_transport=>receive_pack(
+      iv_url         = io_repo->get_url( )
+      iv_old         = is_tag-sha1
+      iv_new         = c_zero
+      iv_branch_name = is_tag-name
+      iv_pack        = lv_pack ).
+
+  ENDMETHOD.
+
   METHOD create_branch.
 
     DATA: lt_objects TYPE zif_abapgit_definitions=>ty_objects_tt,
@@ -11959,6 +11996,28 @@ CLASS lcl_git_porcelain IMPLEMENTATION.
 
     IF iv_name CS ` `.
       zcx_abapgit_exception=>raise( 'Branch name cannot contain blank spaces' ).
+    ENDIF.
+
+* "client MUST send an empty packfile"
+* https://github.com/git/git/blob/master/Documentation/technical/pack-protocol.txt#L514
+    lv_pack = lcl_git_pack=>encode( lt_objects ).
+
+    lcl_git_transport=>receive_pack(
+      iv_url         = io_repo->get_url( )
+      iv_old         = c_zero
+      iv_new         = iv_from
+      iv_branch_name = iv_name
+      iv_pack        = lv_pack ).
+
+  ENDMETHOD.
+
+  METHOD create_tag.
+
+    DATA: lt_objects TYPE zif_abapgit_definitions=>ty_objects_tt,
+          lv_pack    TYPE xstring.
+
+    IF iv_name CS ` `.
+      zcx_abapgit_exception=>raise( 'Tag name cannot contain blank spaces' ).
     ENDIF.
 
 * "client MUST send an empty packfile"
@@ -15431,6 +15490,11 @@ CLASS lcl_popups DEFINITION FINAL.
         EXPORTING ev_name   TYPE string
                   ev_cancel TYPE abap_bool
         RAISING   zcx_abapgit_exception,
+      create_tag_popup
+        IMPORTING iv_sha1   TYPE zif_abapgit_definitions=>ty_sha1
+        EXPORTING ev_name   TYPE string
+                  ev_cancel TYPE abap_bool
+        RAISING   zcx_abapgit_exception,
       run_page_class_popup
         EXPORTING ev_name   TYPE string
                   ev_cancel TYPE abap_bool
@@ -15443,6 +15507,11 @@ CLASS lcl_popups DEFINITION FINAL.
                   iv_default_branch  TYPE string OPTIONAL
                   iv_show_new_option TYPE abap_bool OPTIONAL
         RETURNING VALUE(rs_branch)   TYPE lcl_git_branch_list=>ty_git_branch
+        RAISING   zcx_abapgit_exception,
+      tag_list_popup
+        IMPORTING iv_url         TYPE string
+                  iv_select_mode TYPE abap_bool DEFAULT abap_true
+        RETURNING VALUE(rs_tag)  TYPE lcl_git_branch_list=>ty_git_branch
         RAISING   zcx_abapgit_exception,
       repo_popup
         IMPORTING iv_url            TYPE string
@@ -15693,6 +15762,55 @@ CLASS lcl_popups IMPLEMENTATION.
 
   ENDMETHOD.
 
+  METHOD create_tag_popup.
+
+    DATA: lv_answer        TYPE c LENGTH 1,
+          lt_fields        TYPE TABLE OF sval,
+          lv_text_question TYPE string.
+
+    FIELD-SYMBOLS: <ls_field> LIKE LINE OF lt_fields.
+
+    CLEAR: ev_name, ev_cancel.
+
+    lv_text_question = `You create a tag from current commit ` && iv_sha1(7) && ` continue?`.
+
+    lv_answer = lcl_popups=>popup_to_confirm( titlebar      = `Create a tag?`
+                                              text_question = lv_text_question ).
+    IF lv_answer <> '1'.
+      ev_cancel = abap_true.
+      RETURN.
+    ENDIF.
+
+    add_field( EXPORTING iv_tabname   = 'TEXTL'
+                         iv_fieldname = 'LINE'
+                         iv_fieldtext = 'Name'
+                         iv_value     = 'new-tag-name'
+               CHANGING ct_fields     = lt_fields ).
+
+    CALL FUNCTION 'POPUP_GET_VALUES'
+      EXPORTING
+        popup_title     = 'Create tag'
+      IMPORTING
+        returncode      = lv_answer
+      TABLES
+        fields          = lt_fields
+      EXCEPTIONS
+        error_in_fields = 1
+        OTHERS          = 2 ##NO_TEXT.
+    IF sy-subrc <> 0.
+      zcx_abapgit_exception=>raise( 'error from POPUP_GET_VALUES' ).
+    ENDIF.
+
+    IF lv_answer = 'A'.
+      ev_cancel = abap_true.
+    ELSE.
+      READ TABLE lt_fields INDEX 1 ASSIGNING <ls_field>.
+      ASSERT sy-subrc = 0.
+      ev_name = |{ zif_abapgit_definitions=>gc_tag_prefix }{ <ls_field>-value }|.
+    ENDIF.
+
+  ENDMETHOD.
+
   METHOD run_page_class_popup.
 
     DATA: lv_answer TYPE c LENGTH 1,
@@ -15914,6 +16032,120 @@ CLASS lcl_popups IMPLEMENTATION.
       ENDIF.
       ASSERT <ls_branch> IS ASSIGNED.
       rs_branch = lo_branches->find_by_name( <ls_branch>-name ).
+    ENDIF.
+
+  ENDMETHOD.
+
+  METHOD tag_list_popup.
+
+    DATA: lo_branches         TYPE REF TO lcl_git_branch_list,
+          lt_tags             TYPE lcl_git_branch_list=>ty_git_branch_list_tt,
+          lv_answer           TYPE c LENGTH 1,
+          lt_selection        TYPE TABLE OF spopli,
+          lv_name_with_prefix TYPE string,
+          lo_alv              TYPE REF TO cl_salv_table,
+          lo_table_header     TYPE REF TO cl_salv_form_text,
+          lo_columns          TYPE REF TO cl_salv_columns_table,
+          lx_alv              TYPE REF TO cx_salv_error.
+
+    FIELD-SYMBOLS: <ls_sel> LIKE LINE OF lt_selection,
+                   <ls_tag> LIKE LINE OF lt_tags.
+
+    lo_branches = lcl_git_transport=>branches( iv_url ).
+    lt_tags     = lo_branches->get_tags_only( ).
+
+    IF iv_select_mode = abap_true.
+
+      LOOP AT lt_tags ASSIGNING <ls_tag>.
+
+        INSERT INITIAL LINE INTO lt_selection INDEX 1 ASSIGNING <ls_sel>.
+        <ls_sel>-varoption = replace( val  = <ls_tag>-name
+                                      sub  = zif_abapgit_definitions=>gc_tag_prefix
+                                      with = '' ).
+
+      ENDLOOP.
+
+      CALL FUNCTION 'POPUP_TO_DECIDE_LIST'
+        EXPORTING
+          textline1          = 'Select tag'
+          titel              = 'Select tag'
+          start_col          = 30
+          start_row          = 5
+        IMPORTING
+          answer             = lv_answer
+        TABLES
+          t_spopli           = lt_selection
+        EXCEPTIONS
+          not_enough_answers = 1
+          too_much_answers   = 2
+          too_much_marks     = 3
+          OTHERS             = 4.                             "#EC NOTEXT
+      IF sy-subrc <> 0.
+        zcx_abapgit_exception=>raise( 'Error from POPUP_TO_DECIDE_LIST' ).
+      ENDIF.
+
+      IF lv_answer = 'A'. " cancel
+        RETURN.
+      ENDIF.
+
+      READ TABLE lt_selection ASSIGNING <ls_sel> WITH KEY selflag = abap_true.
+      ASSERT sy-subrc = 0.
+
+      lv_name_with_prefix = zif_abapgit_definitions=>gc_tag_prefix &&  <ls_sel>-varoption.
+
+      READ TABLE lt_tags ASSIGNING <ls_tag> WITH KEY name = lv_name_with_prefix.
+      ASSERT sy-subrc = 0.
+
+      rs_tag = <ls_tag>.
+
+    ELSE.
+
+      LOOP AT lt_tags ASSIGNING <ls_tag>.
+
+        <ls_tag>-name = replace( val  = <ls_tag>-name
+                                 sub  = zif_abapgit_definitions=>gc_tag_prefix
+                                 with = '' ).
+        <ls_tag>-sha1 = <ls_tag>-sha1(7).
+
+      ENDLOOP.
+
+      TRY.
+          cl_salv_table=>factory(
+            IMPORTING
+              r_salv_table   = lo_alv
+            CHANGING
+              t_table        = lt_tags ).
+
+          lo_columns = lo_alv->get_columns( ).
+
+          lo_columns->get_column( `TYPE` )->set_technical( ).
+          lo_columns->get_column( `IS_HEAD` )->set_technical( ).
+          lo_columns->get_column( `DISPLAY_NAME` )->set_technical( ).
+
+          lo_columns->get_column( `SHA1` )->set_output_length( 10 ).
+          lo_columns->get_column( `SHA1` )->set_medium_text( 'SHA' ).
+
+          lo_columns->get_column( `NAME` )->set_medium_text( 'Tag name' ).
+
+          lo_columns->set_optimize( ).
+
+          lo_alv->set_screen_popup( start_column = 5
+                                    end_column   = 50
+                                    start_line   = 5
+                                    end_line     = 20 ).
+
+          CREATE OBJECT lo_table_header
+            EXPORTING
+              text = `Tags`.
+
+          lo_alv->set_top_of_list( lo_table_header ).
+
+          lo_alv->display( ).
+
+        CATCH cx_salv_error INTO lx_alv.
+          zcx_abapgit_exception=>raise( lx_alv->get_text( ) ).
+      ENDTRY.
+
     ENDIF.
 
   ENDMETHOD.
@@ -40749,6 +40981,18 @@ CLASS lcl_services_git DEFINITION FINAL.
       IMPORTING iv_key TYPE lcl_persistence_repo=>ty_repo-key
       RAISING   zcx_abapgit_exception zcx_abapgit_cancel.
 
+    CLASS-METHODS create_tag
+      IMPORTING iv_key TYPE lcl_persistence_repo=>ty_repo-key
+      RAISING   zcx_abapgit_exception zcx_abapgit_cancel.
+
+    CLASS-METHODS delete_tag
+      IMPORTING iv_key TYPE lcl_persistence_repo=>ty_repo-key
+      RAISING   zcx_abapgit_exception zcx_abapgit_cancel.
+
+    CLASS-METHODS tag_overview
+      IMPORTING iv_key TYPE lcl_persistence_repo=>ty_repo-key
+      RAISING   zcx_abapgit_exception zcx_abapgit_cancel.
+
     CLASS-METHODS commit
       IMPORTING io_repo   TYPE REF TO lcl_repo_online
                 is_commit TYPE ty_commit_fields
@@ -40918,6 +41162,83 @@ CLASS lcl_services_git IMPLEMENTATION.
     MESSAGE 'Branch deleted' TYPE 'S'.
 
   ENDMETHOD.  "delete_branch
+
+  METHOD create_tag.
+
+    " Here we create a 'lightweight' tag. Which means that
+    " the tag only contains the commit checksum but no meta data
+    "
+    " Later we probably want to add also 'annotated' tags.
+    " Which include more detailed information besides the commit. Like message, date and the tagger
+    "
+    " https://git-scm.com/book/en/v2/Git-Basics-Tagging
+
+    DATA: lv_name   TYPE string,
+          lv_cancel TYPE abap_bool,
+          lo_repo   TYPE REF TO lcl_repo_online,
+          lx_error  TYPE REF TO zcx_abapgit_exception.
+
+    lo_repo ?= lcl_app=>repo_srv( )->get( iv_key ).
+
+    lcl_popups=>create_tag_popup(
+      EXPORTING
+        iv_sha1   = lo_repo->get_sha1_local( )
+      IMPORTING
+        ev_name   = lv_name
+        ev_cancel = lv_cancel ).
+    IF lv_cancel = abap_true.
+      RAISE EXCEPTION TYPE zcx_abapgit_cancel.
+    ENDIF.
+
+    ASSERT lv_name CP 'refs/tags/+*'.
+
+    TRY.
+        lcl_git_porcelain=>create_tag( io_repo = lo_repo
+                                       iv_name = lv_name
+                                       iv_from = lo_repo->get_sha1_local( ) ).
+
+      CATCH zcx_abapgit_exception INTO lx_error.
+        zcx_abapgit_exception=>raise( |Cannot create tag { lv_name }. Error: '{ lx_error->text }'| ).
+    ENDTRY.
+
+    MESSAGE |Tag { replace( val  = lv_name
+                            sub  = zif_abapgit_definitions=>gc_tag_prefix
+                            with = '' ) } created| TYPE 'S' ##NO_TEXT.
+
+  ENDMETHOD.
+
+  METHOD delete_tag.
+
+    DATA: lo_repo TYPE REF TO lcl_repo_online,
+          ls_tag  TYPE lcl_git_branch_list=>ty_git_branch.
+
+    lo_repo ?= lcl_app=>repo_srv( )->get( iv_key ).
+
+    ls_tag = lcl_popups=>tag_list_popup( lo_repo->get_url( ) ).
+    IF ls_tag IS INITIAL.
+      RAISE EXCEPTION TYPE zcx_abapgit_cancel.
+    ENDIF.
+
+    lcl_git_porcelain=>delete_tag(
+      io_repo = lo_repo
+      is_tag  = ls_tag ).
+
+    MESSAGE |Tag { replace( val  = ls_tag-name
+                            sub  = zif_abapgit_definitions=>gc_tag_prefix
+                            with = '' ) } deleted| TYPE 'S'.
+
+  ENDMETHOD.
+
+  METHOD tag_overview.
+
+    DATA: lo_repo TYPE REF TO lcl_repo_online.
+
+    lo_repo ?= lcl_app=>repo_srv( )->get( iv_key ).
+
+    lcl_popups=>tag_list_popup( iv_url         = lo_repo->get_url( )
+                                iv_select_mode = abap_false ).
+
+  ENDMETHOD.
 
   METHOD commit.
 
@@ -45923,6 +46244,7 @@ CLASS lcl_gui_view_repo IMPLEMENTATION.
 
     DATA: lo_tb_advanced TYPE REF TO lcl_html_toolbar,
           lo_tb_branch   TYPE REF TO lcl_html_toolbar,
+          lo_tb_tag      TYPE REF TO lcl_html_toolbar,
           lv_key         TYPE lcl_persistence_db=>ty_value,
           lv_wp_opt      LIKE zif_abapgit_definitions=>gc_html_opt-crossout,
           lv_crossout    LIKE zif_abapgit_definitions=>gc_html_opt-crossout,
@@ -45931,6 +46253,7 @@ CLASS lcl_gui_view_repo IMPLEMENTATION.
     CREATE OBJECT ro_toolbar.
     CREATE OBJECT lo_tb_branch.
     CREATE OBJECT lo_tb_advanced.
+    CREATE OBJECT lo_tb_tag.
 
     lv_key = mo_repo->get_key( ).
 
@@ -45952,6 +46275,14 @@ CLASS lcl_gui_view_repo IMPLEMENTATION.
                          iv_act = |{ zif_abapgit_definitions=>gc_action-git_branch_create }?{ lv_key }| ).
       lo_tb_branch->add( iv_txt = 'Delete'
                          iv_act = |{ zif_abapgit_definitions=>gc_action-git_branch_delete }?{ lv_key }| ).
+
+      lo_tb_tag->add( iv_txt = 'Overview'
+                      iv_act = |{ zif_abapgit_definitions=>gc_action-go_tag_overview }?{ lv_key }| ).
+      lo_tb_tag->add( iv_txt = 'Create'
+                      iv_act = |{ zif_abapgit_definitions=>gc_action-git_tag_create }?{ lv_key }| ).
+      lo_tb_tag->add( iv_txt = 'Delete'
+                      iv_act = |{ zif_abapgit_definitions=>gc_action-git_tag_delete }?{ lv_key }| ).
+
     ENDIF.
 
     " Build advanced drop-down ========================
@@ -46015,6 +46346,8 @@ CLASS lcl_gui_view_repo IMPLEMENTATION.
       ENDTRY.
       ro_toolbar->add( iv_txt = 'Branch'
                        io_sub = lo_tb_branch ) ##NO_TEXT.
+      ro_toolbar->add( iv_txt = 'Tag'
+                       io_sub = lo_tb_tag ) ##NO_TEXT.
     ELSE.
       ro_toolbar->add( iv_txt = 'Import ZIP'
                        iv_act = |{ zif_abapgit_definitions=>gc_action-zip_import }?{ lv_key }|
@@ -49094,7 +49427,6 @@ CLASS lcl_gui_page_main IMPLEMENTATION.
     DATA: lo_advsub  TYPE REF TO lcl_html_toolbar,
           lo_helpsub TYPE REF TO lcl_html_toolbar.
 
-
     CREATE OBJECT ro_menu.
     CREATE OBJECT lo_advsub.
     CREATE OBJECT lo_helpsub.
@@ -50467,6 +50799,17 @@ CLASS lcl_gui_router IMPLEMENTATION.
         ev_state = zif_abapgit_definitions=>gc_event_state-re_render.
       WHEN zif_abapgit_definitions=>gc_action-git_branch_switch.             " GIT Switch branch
         lcl_services_git=>switch_branch( lv_key ).
+        ev_state = zif_abapgit_definitions=>gc_event_state-re_render.
+      WHEN zif_abapgit_definitions=>gc_action-go_tag_overview.               " GIT Tag overview
+        lcl_services_git=>tag_overview( lv_key ).
+        ev_state = zif_abapgit_definitions=>gc_event_state-re_render.
+      WHEN zif_abapgit_definitions=>gc_action-git_tag_create.                " GIT Tag create
+        lcl_services_git=>create_tag( lv_key ).
+        lcl_services_repo=>refresh( lv_key ).
+        ev_state = zif_abapgit_definitions=>gc_event_state-re_render.
+      WHEN zif_abapgit_definitions=>gc_action-git_tag_delete.                " GIT Tag create
+        lcl_services_git=>delete_tag( lv_key ).
+        lcl_services_repo=>refresh( lv_key ).
         ev_state = zif_abapgit_definitions=>gc_event_state-re_render.
 
         "Others
@@ -55871,5 +56214,5 @@ AT SELECTION-SCREEN.
   ENDIF.
 
 ****************************************************
-* abapmerge - 2018-01-03T17:47:55.115Z
+* abapmerge - 2018-01-03T17:48:25.811Z
 ****************************************************
