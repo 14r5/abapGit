@@ -8391,6 +8391,9 @@ CLASS lcl_repo DEFINITION ABSTRACT FRIENDS lcl_repo_srv.
         RAISING   zcx_abapgit_exception,
       is_offline
         RETURNING VALUE(rv_offline) TYPE abap_bool
+        RAISING   zcx_abapgit_exception,
+      set_files_remote
+        IMPORTING it_files TYPE zif_abapgit_definitions=>ty_files_tt
         RAISING   zcx_abapgit_exception.
 
   PROTECTED SECTION.
@@ -8458,6 +8461,9 @@ CLASS lcl_repo_online DEFINITION INHERITING FROM lcl_repo FINAL.
         RETURNING VALUE(rt_results) TYPE zif_abapgit_definitions=>ty_results_tt
         RAISING   zcx_abapgit_exception,
       reset_status,
+      set_objects
+        IMPORTING it_objects TYPE zif_abapgit_definitions=>ty_objects_tt
+        RAISING   zcx_abapgit_exception,
       initialize
         RAISING zcx_abapgit_exception,
       rebuild_local_checksums REDEFINITION,
@@ -8495,10 +8501,6 @@ ENDCLASS.                    "lcl_repo_online DEFINITION
 CLASS lcl_repo_offline DEFINITION INHERITING FROM lcl_repo FINAL.
 
   PUBLIC SECTION.
-    METHODS:
-      set_files_remote
-        IMPORTING it_files TYPE zif_abapgit_definitions=>ty_files_tt
-        RAISING   zcx_abapgit_exception.
 
 ENDCLASS.                    "lcl_repo_offline DEFINITION
 
@@ -11839,6 +11841,7 @@ CLASS lcl_git_porcelain IMPLEMENTATION.
           lv_commit  TYPE xstring,
           lt_objects TYPE zif_abapgit_definitions=>ty_objects_tt,
           lv_pack    TYPE xstring,
+          lt_files   TYPE zif_abapgit_definitions=>ty_files_tt,
           ls_object  LIKE LINE OF lt_objects,
           ls_commit  TYPE lcl_git_pack=>ty_commit.
 
@@ -11918,6 +11921,15 @@ CLASS lcl_git_porcelain IMPLEMENTATION.
       iv_new         = rv_branch
       iv_branch_name = io_stage->get_branch_name( )
       iv_pack        = lv_pack ).
+
+* update objects in repo, we know what has been pushed
+    APPEND LINES OF io_repo->get_objects( ) TO lt_objects.
+    io_repo->set_objects( lt_objects ).
+    walk( EXPORTING it_objects = lt_objects
+                    iv_sha1 = ls_commit-tree
+                    iv_path = '/'
+          CHANGING ct_files = lt_files ).
+    io_repo->set_files_remote( lt_files ).
 
   ENDMETHOD.                    "receive_pack
 
@@ -39012,12 +39024,6 @@ ENDCLASS.
 *----------------------------------------------------------------------*
 CLASS lcl_repo_offline IMPLEMENTATION.
 
-  METHOD set_files_remote.
-
-    mt_remote = it_files.
-
-  ENDMETHOD.
-
 ENDCLASS.                    "lcl_repo_offline IMPLEMENTATION
 
 *----------------------------------------------------------------------*
@@ -39074,6 +39080,10 @@ CLASS lcl_repo_online IMPLEMENTATION.
   METHOD reset_status.
     CLEAR mt_status.
   ENDMETHOD.  " reset_status.
+
+  METHOD set_objects.
+    mt_objects = it_objects.
+  ENDMETHOD.
 
   METHOD refresh.
 
@@ -39212,10 +39222,12 @@ CLASS lcl_repo_online IMPLEMENTATION.
 
     IF io_stage->get_branch_sha1( ) = get_sha1_local( ).
 * pushing to the branch currently represented by this repository object
+      mv_branch = lv_branch.
       set( iv_sha1 = lv_branch ).
+    ELSE.
+      refresh( ).
     ENDIF.
 
-    refresh( ).
     update_local_checksums( lt_updated_files ).
 
     IF lcl_stage_logic=>count( me ) = 0.
@@ -39721,6 +39733,12 @@ CLASS lcl_repo IMPLEMENTATION.
 
   METHOD is_offline.
     rv_offline = ms_data-offline.
+  ENDMETHOD.
+
+  METHOD set_files_remote.
+
+    mt_remote = it_files.
+
   ENDMETHOD.
 
   METHOD refresh.
@@ -55853,5 +55871,5 @@ AT SELECTION-SCREEN.
   ENDIF.
 
 ****************************************************
-* abapmerge - 2017-12-19T16:47:02.771Z
+* abapmerge - 2018-01-03T17:47:55.115Z
 ****************************************************
