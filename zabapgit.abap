@@ -7773,6 +7773,52 @@ ENDCLASS.
 
 
 ****************************************************
+* abapmerge - ZABAPGIT_TAG
+****************************************************
+*&---------------------------------------------------------------------*
+*& Include zabapgit_tag
+*&---------------------------------------------------------------------*
+
+CLASS lcl_tag DEFINITION.
+
+  PUBLIC SECTION.
+    CLASS-METHODS:
+      add_tag_prefix
+        IMPORTING
+          iv_text        TYPE csequence
+        RETURNING
+          VALUE(rv_text) TYPE string,
+
+      remove_tag_prefix
+        IMPORTING
+          iv_text        TYPE string
+        RETURNING
+          VALUE(rv_text) TYPE string.
+
+ENDCLASS.
+
+CLASS lcl_tag IMPLEMENTATION.
+
+  METHOD add_tag_prefix.
+
+    rv_text = zif_abapgit_definitions=>gc_tag_prefix && iv_text.
+
+  ENDMETHOD.
+
+  METHOD remove_tag_prefix.
+
+    rv_text = iv_text.
+
+    REPLACE FIRST OCCURRENCE OF zif_abapgit_definitions=>gc_tag_prefix
+            IN rv_text
+            WITH ''.
+
+  ENDMETHOD.
+
+ENDCLASS.
+
+
+****************************************************
 * abapmerge - ZABAPGIT_STAGE
 ****************************************************
 *&---------------------------------------------------------------------*
@@ -15603,13 +15649,7 @@ CLASS lcl_popups DEFINITION FINAL.
         EXPORTING
           ev_url     TYPE abaptxt255-line
           ev_package TYPE tdevc-devclass
-          ev_branch  TYPE textl-line,
-
-      remove_tag_prefix
-        IMPORTING
-          iv_text        TYPE string
-        RETURNING
-          VALUE(rv_text) TYPE spopli-varoption.
+          ev_branch  TYPE textl-line.
 
 ENDCLASS.
 
@@ -15813,7 +15853,7 @@ CLASS lcl_popups IMPLEMENTATION.
       READ TABLE lt_fields WITH KEY fieldname = 'LINE'
                            ASSIGNING <ls_field>.
       ASSERT sy-subrc = 0.
-      ev_name = |{ zif_abapgit_definitions=>gc_tag_prefix }{ <ls_field>-value }|.
+      ev_name = lcl_tag=>add_tag_prefix( <ls_field>-value ).
     ENDIF.
 
   ENDMETHOD.
@@ -16070,7 +16110,7 @@ CLASS lcl_popups IMPLEMENTATION.
       LOOP AT lt_tags ASSIGNING <ls_tag>.
 
         INSERT INITIAL LINE INTO lt_selection INDEX 1 ASSIGNING <ls_sel>.
-        <ls_sel>-varoption = remove_tag_prefix( <ls_tag>-name ).
+        <ls_sel>-varoption = lcl_tag=>remove_tag_prefix( <ls_tag>-name ).
 
       ENDLOOP.
 
@@ -16100,7 +16140,7 @@ CLASS lcl_popups IMPLEMENTATION.
       READ TABLE lt_selection ASSIGNING <ls_sel> WITH KEY selflag = abap_true.
       ASSERT sy-subrc = 0.
 
-      lv_name_with_prefix = zif_abapgit_definitions=>gc_tag_prefix &&  <ls_sel>-varoption.
+      lv_name_with_prefix = lcl_tag=>add_Tag_prefix( <ls_sel>-varoption ).
 
       READ TABLE lt_tags ASSIGNING <ls_tag> WITH KEY name = lv_name_with_prefix.
       ASSERT sy-subrc = 0.
@@ -16111,7 +16151,7 @@ CLASS lcl_popups IMPLEMENTATION.
 
       LOOP AT lt_tags ASSIGNING <ls_tag>.
 
-        <ls_tag>-name = remove_tag_prefix( <ls_tag>-name ).
+        <ls_tag>-name = lcl_tag=>remove_tag_prefix( <ls_tag>-name ).
         <ls_tag>-sha1 = <ls_tag>-sha1(7).
 
       ENDLOOP.
@@ -16695,16 +16735,6 @@ CLASS lcl_popups IMPLEMENTATION.
 
   ENDMETHOD.
 
-
-  METHOD remove_tag_prefix.
-
-    rv_text = iv_text.
-
-    REPLACE FIRST OCCURRENCE OF zif_abapgit_definitions=>gc_tag_prefix
-            IN rv_text
-            WITH ''.
-
-  ENDMETHOD.
 
 ENDCLASS.
 
@@ -41194,7 +41224,8 @@ CLASS lcl_services_git IMPLEMENTATION.
     DATA: lv_name   TYPE string,
           lv_cancel TYPE abap_bool,
           lo_repo   TYPE REF TO lcl_repo_online,
-          lx_error  TYPE REF TO zcx_abapgit_exception.
+          lx_error  TYPE REF TO zcx_abapgit_exception,
+          lv_text   TYPE string.
 
     lo_repo ?= lcl_app=>repo_srv( )->get( iv_key ).
 
@@ -41219,16 +41250,17 @@ CLASS lcl_services_git IMPLEMENTATION.
         zcx_abapgit_exception=>raise( |Cannot create tag { lv_name }. Error: '{ lx_error->text }'| ).
     ENDTRY.
 
-    MESSAGE |Tag { replace( val  = lv_name
-                            sub  = zif_abapgit_definitions=>gc_tag_prefix
-                            with = '' ) } created| TYPE 'S' ##NO_TEXT.
+    lv_text = |Tag { lcl_tag=>remove_tag_prefix( lv_name ) } created| ##NO_TEXT.
+
+    MESSAGE lv_text TYPE 'S'.
 
   ENDMETHOD.
 
   METHOD delete_tag.
 
     DATA: lo_repo TYPE REF TO lcl_repo_online,
-          ls_tag  TYPE lcl_git_branch_list=>ty_git_branch.
+          ls_tag  TYPE lcl_git_branch_list=>ty_git_branch,
+          lv_text TYPE string.
 
     lo_repo ?= lcl_app=>repo_srv( )->get( iv_key ).
 
@@ -41241,9 +41273,9 @@ CLASS lcl_services_git IMPLEMENTATION.
       io_repo = lo_repo
       is_tag  = ls_tag ).
 
-    MESSAGE |Tag { replace( val  = ls_tag-name
-                            sub  = zif_abapgit_definitions=>gc_tag_prefix
-                            with = '' ) } deleted| TYPE 'S'.
+    lv_text = |Tag { lcl_tag=>remove_tag_prefix( ls_tag-name ) } deleted| ##NO_TEXT.
+
+    MESSAGE lv_text TYPE 'S'.
 
   ENDMETHOD.
 
@@ -48012,6 +48044,8 @@ CLASS lcl_branch_overview IMPLEMENTATION.
 
   METHOD determine_tags.
 
+    DATA: lv_tag TYPE LINE OF lcl_branch_overview=>ty_commit-tags.
+
     FIELD-SYMBOLS: <ls_tag>    TYPE lcl_git_branch_list=>ty_git_branch,
                    <ls_commit> TYPE lcl_branch_overview=>ty_commit.
 
@@ -48021,9 +48055,8 @@ CLASS lcl_branch_overview IMPLEMENTATION.
                             ASSIGNING <ls_commit>.
       CHECK sy-subrc = 0.
 
-      INSERT replace( val  = <ls_tag>-name
-                      sub  = zif_abapgit_definitions=>gc_tag_prefix
-                      with = `` ) INTO TABLE <ls_commit>-tags.
+      lv_tag = lcl_tag=>remove_tag_prefix( <ls_tag>-name ).
+      INSERT lv_tag INTO TABLE <ls_commit>-tags.
 
     ENDLOOP.
 
@@ -56272,5 +56305,5 @@ AT SELECTION-SCREEN.
   ENDIF.
 
 ****************************************************
-* abapmerge - 2018-01-04T10:57:20.623Z
+* abapmerge - 2018-01-04T14:24:56.600Z
 ****************************************************
