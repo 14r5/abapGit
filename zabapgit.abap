@@ -261,6 +261,7 @@ INTERFACE zif_abapgit_definitions
       commit TYPE zif_abapgit_definitions=>ty_type VALUE 'commit', "#EC NOTEXT
       tree   TYPE zif_abapgit_definitions=>ty_type VALUE 'tree', "#EC NOTEXT
       ref_d  TYPE zif_abapgit_definitions=>ty_type VALUE 'ref_d', "#EC NOTEXT
+      tag    TYPE zif_abapgit_definitions=>ty_type VALUE 'tag', "#EC NOTEXT
       blob   TYPE zif_abapgit_definitions=>ty_type VALUE 'blob', "#EC NOTEXT
     END OF gc_type .
   CONSTANTS:
@@ -11245,6 +11246,8 @@ CLASS lcl_git_pack IMPLEMENTATION.
         rv_type = zif_abapgit_definitions=>gc_type-tree.
       WHEN '011'.
         rv_type = zif_abapgit_definitions=>gc_type-blob.
+      WHEN '100'.
+        rv_type = zif_abapgit_definitions=>gc_type-tag.
       WHEN '111'.
         rv_type = zif_abapgit_definitions=>gc_type-ref_d.
       WHEN OTHERS.
@@ -15600,7 +15603,13 @@ CLASS lcl_popups DEFINITION FINAL.
         EXPORTING
           ev_url     TYPE abaptxt255-line
           ev_package TYPE tdevc-devclass
-          ev_branch  TYPE textl-line.
+          ev_branch  TYPE textl-line,
+
+      remove_tag_prefix
+        IMPORTING
+          iv_text        TYPE string
+        RETURNING
+          VALUE(rv_text) TYPE spopli-varoption.
 
 ENDCLASS.
 
@@ -15764,22 +15773,19 @@ CLASS lcl_popups IMPLEMENTATION.
 
   METHOD create_tag_popup.
 
-    DATA: lv_answer        TYPE c LENGTH 1,
-          lt_fields        TYPE TABLE OF sval,
-          lv_text_question TYPE string.
+    DATA: lv_answer TYPE c LENGTH 1,
+          lt_fields TYPE TABLE OF sval.
 
     FIELD-SYMBOLS: <ls_field> LIKE LINE OF lt_fields.
 
     CLEAR: ev_name, ev_cancel.
 
-    lv_text_question = `You create a tag from current commit ` && iv_sha1(7) && ` continue?`.
-
-    lv_answer = lcl_popups=>popup_to_confirm( titlebar      = `Create a tag?`
-                                              text_question = lv_text_question ).
-    IF lv_answer <> '1'.
-      ev_cancel = abap_true.
-      RETURN.
-    ENDIF.
+    add_field( EXPORTING iv_tabname    = 'TOAVALUE'
+                         iv_fieldname  = 'REFER_CODE'
+                         iv_fieldtext  = 'SHA'
+                         iv_value      = iv_sha1(7)
+                         iv_field_attr = '05'
+               CHANGING ct_fields      = lt_fields ).
 
     add_field( EXPORTING iv_tabname   = 'TEXTL'
                          iv_fieldname = 'LINE'
@@ -15804,7 +15810,8 @@ CLASS lcl_popups IMPLEMENTATION.
     IF lv_answer = 'A'.
       ev_cancel = abap_true.
     ELSE.
-      READ TABLE lt_fields INDEX 1 ASSIGNING <ls_field>.
+      READ TABLE lt_fields WITH KEY fieldname = 'LINE'
+                           ASSIGNING <ls_field>.
       ASSERT sy-subrc = 0.
       ev_name = |{ zif_abapgit_definitions=>gc_tag_prefix }{ <ls_field>-value }|.
     ENDIF.
@@ -16054,14 +16061,16 @@ CLASS lcl_popups IMPLEMENTATION.
     lo_branches = lcl_git_transport=>branches( iv_url ).
     lt_tags     = lo_branches->get_tags_only( ).
 
+    IF lines( lt_tags ) = 0.
+      zcx_abapgit_exception=>raise( `There are no tags for this repository` ).
+    ENDIF.
+
     IF iv_select_mode = abap_true.
 
       LOOP AT lt_tags ASSIGNING <ls_tag>.
 
         INSERT INITIAL LINE INTO lt_selection INDEX 1 ASSIGNING <ls_sel>.
-        <ls_sel>-varoption = replace( val  = <ls_tag>-name
-                                      sub  = zif_abapgit_definitions=>gc_tag_prefix
-                                      with = '' ).
+        <ls_sel>-varoption = remove_tag_prefix( <ls_tag>-name ).
 
       ENDLOOP.
 
@@ -16102,9 +16111,7 @@ CLASS lcl_popups IMPLEMENTATION.
 
       LOOP AT lt_tags ASSIGNING <ls_tag>.
 
-        <ls_tag>-name = replace( val  = <ls_tag>-name
-                                 sub  = zif_abapgit_definitions=>gc_tag_prefix
-                                 with = '' ).
+        <ls_tag>-name = remove_tag_prefix( <ls_tag>-name ).
         <ls_tag>-sha1 = <ls_tag>-sha1(7).
 
       ENDLOOP.
@@ -16685,6 +16692,17 @@ CLASS lcl_popups IMPLEMENTATION.
     READ TABLE it_fields INDEX 3 ASSIGNING <ls_field>.
     ASSERT sy-subrc = 0.
     ev_branch = <ls_field>-value.
+
+  ENDMETHOD.
+
+
+  METHOD remove_tag_prefix.
+
+    rv_text = iv_text.
+
+    REPLACE FIRST OCCURRENCE OF zif_abapgit_definitions=>gc_tag_prefix
+            IN rv_text
+            WITH ''.
 
   ENDMETHOD.
 
@@ -47702,6 +47720,7 @@ CLASS lcl_branch_overview DEFINITION FINAL.
              message    TYPE string,
              branch     TYPE string,
              merge      TYPE string,
+             tags       TYPE stringtab,
              create     TYPE STANDARD TABLE OF ty_create WITH DEFAULT KEY,
              compressed TYPE abap_bool,
            END OF ty_commit.
@@ -47736,11 +47755,14 @@ CLASS lcl_branch_overview DEFINITION FINAL.
       get_git_objects
         IMPORTING io_repo           TYPE REF TO lcl_repo_online
         RETURNING VALUE(rt_objects) TYPE zif_abapgit_definitions=>ty_objects_tt
-        RAISING   zcx_abapgit_exception.
+        RAISING   zcx_abapgit_exception,
+      determine_tags
+        RAISING zcx_abapgit_exception.
 
     CLASS-DATA:
       gt_branches TYPE lcl_git_branch_list=>ty_git_branch_list_tt,
-      gt_commits  TYPE TABLE OF ty_commit.
+      gt_commits  TYPE TABLE OF ty_commit,
+      gt_tags     TYPE lcl_git_branch_list=>ty_git_branch_list_tt.
 
 ENDCLASS.
 
@@ -47825,6 +47847,7 @@ CLASS lcl_branch_overview IMPLEMENTATION.
 
     determine_branch( ).
     determine_merges( ).
+    determine_tags( ).
     fixes( ).
 
     SORT gt_commits BY time ASCENDING.
@@ -47835,6 +47858,8 @@ CLASS lcl_branch_overview IMPLEMENTATION.
 
   METHOD get_git_objects.
 
+    DATA: lo_branch_list TYPE REF TO lcl_git_branch_list.
+
     lcl_progress=>show( iv_key     = 'Get git objects'
                         iv_current = 1
                         iv_total   = 1
@@ -47844,12 +47869,16 @@ CLASS lcl_branch_overview IMPLEMENTATION.
 * the selected branch
 
     "TODO refactor
-    gt_branches = lcl_git_transport=>branches( io_repo->get_url( ) )->get_branches_only( ).
 
-    lcl_git_transport=>upload_pack( EXPORTING io_repo = io_repo
-                                              iv_deepen = abap_false
+    lo_branch_list = lcl_git_transport=>branches( io_repo->get_url( ) ).
+
+    gt_branches = lo_branch_list->get_branches_only( ).
+    gt_tags = lo_branch_list->get_tags_only( ).
+
+    lcl_git_transport=>upload_pack( EXPORTING io_repo     = io_repo
+                                              iv_deepen   = abap_false
                                               it_branches = gt_branches
-                                    IMPORTING et_objects = rt_objects ).
+                                    IMPORTING et_objects  = rt_objects ).
 
     DELETE rt_objects WHERE type = zif_abapgit_definitions=>gc_type-blob.
 
@@ -47980,6 +48009,26 @@ CLASS lcl_branch_overview IMPLEMENTATION.
 
   ENDMETHOD.
 
+
+  METHOD determine_tags.
+
+    FIELD-SYMBOLS: <ls_tag>    TYPE lcl_git_branch_list=>ty_git_branch,
+                   <ls_commit> TYPE lcl_branch_overview=>ty_commit.
+
+    LOOP AT gt_tags ASSIGNING <ls_tag>.
+
+      READ TABLE gt_commits WITH KEY sha1 = <ls_tag>-sha1
+                            ASSIGNING <ls_commit>.
+      CHECK sy-subrc = 0.
+
+      INSERT replace( val  = <ls_tag>-name
+                      sub  = zif_abapgit_definitions=>gc_tag_prefix
+                      with = `` ) INTO TABLE <ls_commit>-tags.
+
+    ENDLOOP.
+
+  ENDMETHOD.
+
 ENDCLASS.
 
 ***********************
@@ -48094,6 +48143,7 @@ CLASS lcl_gui_page_boverview IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD body.
+    DATA: tag TYPE string.
 
     FIELD-SYMBOLS: <ls_commit> LIKE LINE OF mt_commits,
                    <ls_create> LIKE LINE OF <ls_commit>-create.
@@ -48152,10 +48202,18 @@ CLASS lcl_gui_page_boverview IMPLEMENTATION.
           escape_message( <ls_commit>-message )
           }", dotColor: "black", dotSize: 15, messageHashDisplay: false, messageAuthorDisplay: false\});| ).
       ELSEIF <ls_commit>-merge IS INITIAL.
+
+        " gitgraph doesn't support multiple tags per commit yet.
+        " Therefore we concatenate them.
+        " https://github.com/nicoespeon/gitgraph.js/issues/143
+
+        tag = concat_lines_of( table = <ls_commit>-tags
+                               sep   = ` | ` ).
+
         ro_html->add( |{ escape_branch( <ls_commit>-branch ) }.commit(\{message: "{
           escape_message( <ls_commit>-message ) }", author: "{
           <ls_commit>-author }", sha1: "{
-          <ls_commit>-sha1(7) }"\});| ).
+          <ls_commit>-sha1(7) }", tag: "{ tag }"\});| ).
       ELSE.
         ro_html->add( |{ escape_branch( <ls_commit>-merge ) }.merge({
           escape_branch( <ls_commit>-branch ) }, \{message: "{
@@ -56214,5 +56272,5 @@ AT SELECTION-SCREEN.
   ENDIF.
 
 ****************************************************
-* abapmerge - 2018-01-03T17:52:14.716Z
+* abapmerge - 2018-01-04T10:57:20.623Z
 ****************************************************
