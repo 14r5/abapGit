@@ -10499,11 +10499,11 @@ CLASS lcl_http IMPLEMENTATION.
 
   METHOD create_by_url.
 
-    DATA: lv_uri    TYPE string,
-          lv_scheme TYPE string,
-          li_client TYPE REF TO if_http_client,
-          lo_proxy_configuration  TYPE REF TO lcl_proxy_configuration,
-          lv_text   TYPE string.
+    DATA: lv_uri                 TYPE string,
+          lv_scheme              TYPE string,
+          li_client              TYPE REF TO if_http_client,
+          lo_proxy_configuration TYPE REF TO lcl_proxy_configuration,
+          lv_text                TYPE string.
 
     lo_proxy_configuration = lcl_app=>proxy( ).
 
@@ -10588,6 +10588,9 @@ CLASS lcl_http IMPLEMENTATION.
           lt_list TYPE zif_abapgit_definitions=>ty_icm_sinfo2_tt,
           li_exit TYPE REF TO lif_exit.
 
+    FIELD-SYMBOLS: <ls_list> LIKE LINE OF lt_list.
+
+
     CALL FUNCTION 'ICM_GET_INFO2'
       TABLES
         servlist           = lt_list
@@ -10599,6 +10602,9 @@ CLASS lcl_http IMPLEMENTATION.
     IF sy-subrc <> 0.
       RETURN.
     ENDIF.
+
+    APPEND INITIAL LINE TO lt_list ASSIGNING <ls_list>.
+    <ls_list>-hostname = 'localhost'.
 
     li_exit = lcl_exit=>get_instance( ).
     li_exit->change_local_host( CHANGING ct_hosts = lt_list ).
@@ -33597,23 +33603,24 @@ CLASS lcl_object_sxci IMPLEMENTATION.
 
     CALL FUNCTION 'SXO_IMPL_FOR_BADI_READ'
       EXPORTING
-        imp_name          = lv_implementation_name
-        exit_name         = lv_exit_name
-        inter_name        = ls_badi_definition-inter_name
-        filter_obj        = lo_filter_object
+        imp_name                    = lv_implementation_name
+        exit_name                   = lv_exit_name
+        inter_name                  = ls_badi_definition-inter_name
+        filter_obj                  = lo_filter_object
+        no_create_filter_values_obj = abap_true
       IMPORTING
-        impl              = ls_classic_badi_implementation-implementation_data
-        filter_values_obj = lo_filter_values_object
+        impl                        = ls_classic_badi_implementation-implementation_data
+        filter_values_obj           = lo_filter_values_object
       TABLES
-        fcodes            = ls_classic_badi_implementation-function_codes
-        cocos             = ls_classic_badi_implementation-control_composites
-        intas             = ls_classic_badi_implementation-customer_includes
-        scrns             = ls_classic_badi_implementation-screens
+        fcodes                      = ls_classic_badi_implementation-function_codes
+        cocos                       = ls_classic_badi_implementation-control_composites
+        intas                       = ls_classic_badi_implementation-customer_includes
+        scrns                       = ls_classic_badi_implementation-screens
       CHANGING
-        methods           = lt_methods
+        methods                     = lt_methods
       EXCEPTIONS
-        read_failure      = 1
-        OTHERS            = 2.
+        read_failure                = 1
+        OTHERS                      = 2.
 
     IF sy-subrc <> 0.
       zcx_abapgit_exception=>raise( 'error from SXO_IMPL_FOR_BADI_READ' ).
@@ -56305,5 +56312,5 @@ AT SELECTION-SCREEN.
   ENDIF.
 
 ****************************************************
-* abapmerge - 2018-01-04T14:24:56.600Z
+* abapmerge - 2018-01-05T15:35:33.829Z
 ****************************************************
