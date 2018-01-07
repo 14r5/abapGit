@@ -101,6 +101,7 @@ ENDCLASS.
 CLASS zcl_abapgit_convert DEFINITION DEFERRED.
 CLASS zcl_abapgit_hash DEFINITION DEFERRED.
 CLASS zcl_abapgit_language DEFINITION DEFERRED.
+CLASS zcl_abapgit_path DEFINITION DEFERRED.
 CLASS zcl_abapgit_state DEFINITION DEFERRED.
 CLASS zcl_abapgit_time DEFINITION DEFERRED.
 CLASS zcl_abapgit_url DEFINITION DEFERRED.
@@ -472,6 +473,35 @@ CLASS zcl_abapgit_language DEFINITION
       set_current_language
         IMPORTING
           !iv_language TYPE langu.
+
+ENDCLASS.
+CLASS zcl_abapgit_path DEFINITION
+  CREATE PUBLIC .
+
+  PUBLIC SECTION.
+
+    CLASS-METHODS split_file_location
+      IMPORTING iv_fullpath TYPE string
+      EXPORTING ev_path     TYPE string
+                ev_filename TYPE string.
+
+    CLASS-METHODS is_root
+      IMPORTING iv_path       TYPE string
+      RETURNING VALUE(rv_yes) TYPE abap_bool.
+
+    CLASS-METHODS is_subdir
+      IMPORTING iv_path       TYPE string
+                iv_parent     TYPE string
+      RETURNING VALUE(rv_yes) TYPE abap_bool.
+
+    CLASS-METHODS change_dir
+      IMPORTING iv_cur_dir     TYPE string
+                iv_cd          TYPE string
+      RETURNING VALUE(rv_path) TYPE string.
+
+    CLASS-METHODS get_filename_from_syspath
+      IMPORTING iv_path            TYPE string
+      RETURNING VALUE(rv_filename) TYPE string.
 
 ENDCLASS.
 CLASS zcl_abapgit_state DEFINITION
@@ -1069,6 +1099,103 @@ CLASS zcl_abapgit_language IMPLEMENTATION.
     SET LOCALE LANGUAGE iv_language.
 
   ENDMETHOD.
+ENDCLASS.
+
+CLASS ZCL_ABAPGIT_PATH IMPLEMENTATION.
+
+
+  METHOD change_dir.
+
+    DATA: lv_last TYPE i,
+          lv_temp TYPE string.
+
+    lv_last = strlen( iv_cur_dir ) - 1.
+
+    IF iv_cd = '' OR iv_cd = '.'. " No change
+      rv_path = iv_cur_dir.
+    ELSEIF iv_cd+0(1) = '/'.      " Absolute path
+      rv_path = iv_cd.
+    ELSEIF iv_cd = '..'.          " CD back
+      IF iv_cur_dir = '/' OR iv_cur_dir = ''. " Back from root = root
+        rv_path = iv_cur_dir.
+      ELSE.
+        lv_temp = reverse( iv_cur_dir ).
+        IF lv_temp+0(1) = '/'.
+          SHIFT lv_temp BY 1 PLACES LEFT.
+        ENDIF.
+        SHIFT lv_temp UP TO '/' LEFT.
+        rv_path = reverse( lv_temp ).
+      ENDIF.
+    ELSEIF iv_cur_dir+lv_last(1) = '/'.  " Append cd to cur_dir separated by /
+      rv_path = iv_cur_dir && iv_cd.
+    ELSE.
+      rv_path = iv_cur_dir && '/' && iv_cd.
+    ENDIF.
+
+    " TODO: improve logic and cases
+
+  ENDMETHOD. "change_dir
+
+
+  METHOD get_filename_from_syspath.
+
+    DATA: lv_split TYPE c LENGTH 1,
+          lv_index TYPE i,
+          lt_split TYPE TABLE OF string.
+
+    " filename | c:\filename | /dir/filename | \\server\filename
+    IF iv_path CA '/'.
+      lv_split = '/'.
+    ELSE.
+      lv_split = '\'.
+    ENDIF.
+
+    SPLIT iv_path AT lv_split INTO TABLE lt_split.
+
+    lv_index = lines( lt_split ).
+
+    READ TABLE lt_split INDEX lv_index INTO rv_filename.
+
+  ENDMETHOD.  " get_filename_from_syspath.
+
+
+  METHOD is_root.
+    rv_yes = boolc( iv_path = '/' ).
+  ENDMETHOD. "is_root
+
+
+  METHOD is_subdir.
+
+    DATA lv_len  TYPE i.
+    DATA lv_last TYPE i.
+
+    lv_len  = strlen( iv_parent ).
+    lv_last = lv_len - 1.
+    rv_yes  = boolc( strlen( iv_path ) > lv_len
+                 AND iv_path+0(lv_len) = iv_parent
+                 AND ( iv_parent+lv_last(1) = '/' OR iv_path+lv_len(1) = '/' ) ).
+
+  ENDMETHOD. "is_subdir
+
+
+  METHOD split_file_location.
+
+    DATA: lv_cnt TYPE i,
+          lv_len TYPE i.
+
+    FIND FIRST OCCURRENCE OF REGEX '^/(.*/)?' IN iv_fullpath
+      MATCH COUNT lv_cnt
+      MATCH LENGTH lv_len.
+
+    IF lv_cnt > 0.
+      ev_path     = iv_fullpath+0(lv_len).
+      ev_filename = iv_fullpath+lv_len.
+    ELSE.
+      CLEAR ev_path.
+      ev_filename = iv_fullpath.
+    ENDIF.
+
+  ENDMETHOD.  "split_file_location
 ENDCLASS.
 
 CLASS ZCL_ABAPGIT_STATE IMPLEMENTATION.
@@ -3123,128 +3250,6 @@ ENDCLASS. "lcl_html_toolbar IMPLEMENTATION
 *&---------------------------------------------------------------------*
 *&  Include           ZABAPGIT_UTIL
 *&---------------------------------------------------------------------*
-
-CLASS lcl_path DEFINITION FINAL.
-
-  PUBLIC SECTION.
-
-    CLASS-METHODS split_file_location
-      IMPORTING iv_fullpath TYPE string
-      EXPORTING ev_path     TYPE string
-                ev_filename TYPE string.
-
-    CLASS-METHODS is_root
-      IMPORTING iv_path       TYPE string
-      RETURNING VALUE(rv_yes) TYPE abap_bool.
-
-    CLASS-METHODS is_subdir
-      IMPORTING iv_path       TYPE string
-                iv_parent     TYPE string
-      RETURNING VALUE(rv_yes) TYPE abap_bool.
-
-    CLASS-METHODS change_dir
-      IMPORTING iv_cur_dir     TYPE string
-                iv_cd          TYPE string
-      RETURNING VALUE(rv_path) TYPE string.
-
-    CLASS-METHODS get_filename_from_syspath
-      IMPORTING iv_path            TYPE string
-      RETURNING VALUE(rv_filename) TYPE string.
-
-ENDCLASS. "lcl_path
-
-CLASS lcl_path IMPLEMENTATION.
-
-  METHOD split_file_location.
-
-    DATA: lv_cnt TYPE i,
-          lv_len TYPE i.
-
-    FIND FIRST OCCURRENCE OF REGEX '^/(.*/)?' IN iv_fullpath
-      MATCH COUNT lv_cnt
-      MATCH LENGTH lv_len.
-
-    IF lv_cnt > 0.
-      ev_path     = iv_fullpath+0(lv_len).
-      ev_filename = iv_fullpath+lv_len.
-    ELSE.
-      CLEAR ev_path.
-      ev_filename = iv_fullpath.
-    ENDIF.
-
-  ENDMETHOD.  "split_file_location
-
-  METHOD is_root.
-    rv_yes = boolc( iv_path = '/' ).
-  ENDMETHOD. "is_root
-
-  METHOD is_subdir.
-
-    DATA lv_len  TYPE i.
-    DATA lv_last TYPE i.
-
-    lv_len  = strlen( iv_parent ).
-    lv_last = lv_len - 1.
-    rv_yes  = boolc( strlen( iv_path ) > lv_len
-                 AND iv_path+0(lv_len) = iv_parent
-                 AND ( iv_parent+lv_last(1) = '/' OR iv_path+lv_len(1) = '/' ) ).
-
-  ENDMETHOD. "is_subdir
-
-  METHOD change_dir.
-
-    DATA: lv_last TYPE i,
-          lv_temp TYPE string.
-
-    lv_last = strlen( iv_cur_dir ) - 1.
-
-    IF iv_cd = '' OR iv_cd = '.'. " No change
-      rv_path = iv_cur_dir.
-    ELSEIF iv_cd+0(1) = '/'.      " Absolute path
-      rv_path = iv_cd.
-    ELSEIF iv_cd = '..'.          " CD back
-      IF iv_cur_dir = '/' OR iv_cur_dir = ''. " Back from root = root
-        rv_path = iv_cur_dir.
-      ELSE.
-        lv_temp = reverse( iv_cur_dir ).
-        IF lv_temp+0(1) = '/'.
-          SHIFT lv_temp BY 1 PLACES LEFT.
-        ENDIF.
-        SHIFT lv_temp UP TO '/' LEFT.
-        rv_path = reverse( lv_temp ).
-      ENDIF.
-    ELSEIF iv_cur_dir+lv_last(1) = '/'.  " Append cd to cur_dir separated by /
-      rv_path = iv_cur_dir && iv_cd.
-    ELSE.
-      rv_path = iv_cur_dir && '/' && iv_cd.
-    ENDIF.
-
-    " TODO: improve logic and cases
-
-  ENDMETHOD. "change_dir
-
-  METHOD get_filename_from_syspath.
-
-    DATA: lv_split TYPE c LENGTH 1,
-          lv_index TYPE i,
-          lt_split TYPE TABLE OF string.
-
-    " filename | c:\filename | /dir/filename | \\server\filename
-    IF iv_path CA '/'.
-      lv_split = '/'.
-    ELSE.
-      lv_split = '\'.
-    ENDIF.
-
-    SPLIT iv_path AT lv_split INTO TABLE lt_split.
-
-    lv_index = lines( lt_split ).
-
-    READ TABLE lt_split INDEX lv_index INTO rv_filename.
-
-  ENDMETHOD.  " get_filename_from_syspath.
-
-ENDCLASS. "lcl_path
 
 *----------------------------------------------------------------------*
 *       CLASS lcl_diff DEFINITION
@@ -36912,7 +36917,7 @@ CLASS lcl_object_w3super IMPLEMENTATION.
     " Remove path from filename
     find_param( it_params = ct_params iv_name = c_param_names-filename ). " Check exists
     READ TABLE ct_params ASSIGNING <param> WITH KEY name = c_param_names-filename.
-    <param>-value = lcl_path=>get_filename_from_syspath( |{ <param>-value }| ).
+    <param>-value = zcl_abapgit_path=>get_filename_from_syspath( |{ <param>-value }| ).
 
     " Clear version & filesize
     DELETE ct_params WHERE name = c_param_names-version.
@@ -44643,7 +44648,7 @@ CLASS lcl_repo_content_list IMPLEMENTATION.
       lv_index = sy-tabix.
       CHECK <item>-path <> iv_cur_dir. " files in target dir - just leave them be
 
-      IF lcl_path=>is_subdir( iv_path = <item>-path  iv_parent = iv_cur_dir ) = abap_true.
+      IF zcl_abapgit_path=>is_subdir( iv_path = <item>-path  iv_parent = iv_cur_dir ) = abap_true.
         ls_subitem-changes = <item>-changes.
         ls_subitem-path    = <item>-path.
         ls_subitem-lstate  = <item>-lstate.
@@ -46143,7 +46148,7 @@ CLASS lcl_gui_view_repo IMPLEMENTATION.
         ev_state        = zif_abapgit_definitions=>gc_event_state-re_render.
       WHEN c_actions-change_dir.        " Change dir
         lv_path         = lcl_html_action_utils=>dir_decode( iv_getdata ).
-        mv_cur_dir      = lcl_path=>change_dir( iv_cur_dir = mv_cur_dir iv_cd = lv_path ).
+        mv_cur_dir      = zcl_abapgit_path=>change_dir( iv_cur_dir = mv_cur_dir iv_cd = lv_path ).
         ev_state        = zif_abapgit_definitions=>gc_event_state-re_render.
       WHEN c_actions-toggle_folders.    " Toggle folder view
         mv_show_folders = boolc( mv_show_folders <> abap_true ).
@@ -46210,7 +46215,7 @@ CLASS lcl_gui_view_repo IMPLEMENTATION.
         " Repo content table
         ro_html->add( '<table class="repo_tab">' ).
 
-        IF lcl_path=>is_root( mv_cur_dir ) = abap_false.
+        IF zcl_abapgit_path=>is_root( mv_cur_dir ) = abap_false.
           ro_html->add( render_parent_dir( ) ).
         ENDIF.
 
@@ -49816,9 +49821,13 @@ CLASS lcl_gui_page_stage IMPLEMENTATION.
 
     LOOP AT lt_fields ASSIGNING <ls_item>.
 
-      lcl_path=>split_file_location( EXPORTING iv_fullpath = <ls_item>-name
-                                     IMPORTING ev_path     = ls_file-path
-                                               ev_filename = ls_file-filename ).
+      zcl_abapgit_path=>split_file_location(
+        EXPORTING
+          iv_fullpath = <ls_item>-name
+        IMPORTING
+          ev_path     = ls_file-path
+          ev_filename = ls_file-filename ).
+
       CASE <ls_item>-value.
         WHEN lcl_stage=>c_method-add.
           READ TABLE ms_files-local ASSIGNING <ls_file>
@@ -53414,163 +53423,6 @@ CLASS ltcl_html_action_utils IMPLEMENTATION.
 
 ENDCLASS. "ltcl_html_action_utils
 
-CLASS ltcl_path DEFINITION FOR TESTING RISK LEVEL HARMLESS DURATION SHORT FINAL
-  INHERITING FROM cl_aunit_assert.
-
-  PUBLIC SECTION.
-    METHODS is_root FOR TESTING.
-    METHODS split_file_location FOR TESTING.
-    METHODS is_subdir FOR TESTING.
-    METHODS change_dir FOR TESTING.
-    METHODS get_filename_from_syspath FOR TESTING.
-
-ENDCLASS.   "ltcl_path
-
-CLASS ltcl_path IMPLEMENTATION.
-
-
-  METHOD is_root.
-
-    assert_equals( exp = abap_true  act = lcl_path=>is_root( '/' ) ).
-    assert_equals( exp = abap_false act = lcl_path=>is_root( '' ) ).
-    assert_equals( exp = abap_false act = lcl_path=>is_root( 'somedir' ) ).
-    assert_equals( exp = abap_false act = lcl_path=>is_root( '/somedir' ) ).
-
-  ENDMETHOD.
-
-  METHOD split_file_location.
-
-    DATA: lv_path TYPE string,
-          lv_name TYPE string.
-
-    lcl_path=>split_file_location( EXPORTING iv_fullpath = ''
-                                   IMPORTING ev_path     = lv_path ev_filename = lv_name ).
-    assert_equals( act = lv_path exp = '' ).
-    assert_equals( act = lv_name exp = '' ).
-
-    lcl_path=>split_file_location( EXPORTING iv_fullpath = 'somefile'
-                                   IMPORTING ev_path     = lv_path ev_filename = lv_name ).
-    assert_equals( act = lv_path exp = '' ).
-    assert_equals( act = lv_name exp = 'somefile' ).
-
-    lcl_path=>split_file_location( EXPORTING iv_fullpath = '/'
-                                   IMPORTING ev_path     = lv_path ev_filename = lv_name ).
-    assert_equals( act = lv_path exp = '/' ).
-    assert_equals( act = lv_name exp = '' ).
-
-    lcl_path=>split_file_location( EXPORTING iv_fullpath = '/somefile'
-                                   IMPORTING ev_path     = lv_path ev_filename = lv_name ).
-    assert_equals( act = lv_path exp = '/' ).
-    assert_equals( act = lv_name exp = 'somefile' ).
-
-    lcl_path=>split_file_location( EXPORTING iv_fullpath = '/somedir/'
-                                   IMPORTING ev_path     = lv_path ev_filename = lv_name ).
-    assert_equals( act = lv_path exp = '/somedir/' ).
-    assert_equals( act = lv_name exp = '' ).
-
-    lcl_path=>split_file_location( EXPORTING iv_fullpath = '/somedir/somefile'
-                                   IMPORTING ev_path     = lv_path ev_filename = lv_name ).
-    assert_equals( act = lv_path exp = '/somedir/' ).
-    assert_equals( act = lv_name exp = 'somefile' ).
-
-
-  ENDMETHOD.
-
-  METHOD is_subdir.
-
-    DATA lv_yes TYPE abap_bool.
-
-    lv_yes = lcl_path=>is_subdir( iv_path   = '/dir/subdir'
-                                  iv_parent = '/dir' ).
-    assert_equals( act = lv_yes exp = abap_true ).
-
-    lv_yes = lcl_path=>is_subdir( iv_path   = '/dir/subdir'
-                                  iv_parent = '/dir/' ).
-    assert_equals( act = lv_yes exp = abap_true ).
-
-    lv_yes = lcl_path=>is_subdir( iv_path   = '/another'
-                                  iv_parent = '/dir' ).
-    assert_equals( act = lv_yes exp = abap_false ).
-
-    lv_yes = lcl_path=>is_subdir( iv_path   = '/dir'
-                                  iv_parent = '/dir' ).
-    assert_equals( act = lv_yes exp = abap_false ).
-
-    lv_yes = lcl_path=>is_subdir( iv_path   = '/dir'
-                                  iv_parent = '/' ).
-    assert_equals( act = lv_yes exp = abap_true ).
-
-    lv_yes = lcl_path=>is_subdir( iv_path   = '/dir2'
-                                  iv_parent = '/dir' ).
-    assert_equals( act = lv_yes exp = abap_false ).
-
-  ENDMETHOD.
-
-  METHOD change_dir.
-
-    DATA lv_path TYPE string.
-
-    lv_path = lcl_path=>change_dir( iv_cur_dir = ''
-                                    iv_cd      = '' ).
-    assert_equals( act = lv_path exp = '' ).
-
-    lv_path = lcl_path=>change_dir( iv_cur_dir = '/dir'
-                                    iv_cd      = '' ).
-    assert_equals( act = lv_path exp = '/dir' ).
-
-    lv_path = lcl_path=>change_dir( iv_cur_dir = '/dir'
-                                    iv_cd      = '.' ).
-    assert_equals( act = lv_path exp = '/dir' ).
-
-    lv_path = lcl_path=>change_dir( iv_cur_dir = '/dir'
-                                    iv_cd      = '..' ).
-    assert_equals( act = lv_path exp = '/' ).
-
-    lv_path = lcl_path=>change_dir( iv_cur_dir = '/dir/sub'
-                                    iv_cd      = '..' ).
-    assert_equals( act = lv_path exp = '/dir/' ).
-
-    lv_path = lcl_path=>change_dir( iv_cur_dir = '/dir/'
-                                    iv_cd      = 'sub' ).
-    assert_equals( act = lv_path exp = '/dir/sub' ).
-
-    lv_path = lcl_path=>change_dir( iv_cur_dir = '/dir'
-                                    iv_cd      = 'sub' ).
-    assert_equals( act = lv_path exp = '/dir/sub' ).
-
-
-  ENDMETHOD.
-
-  METHOD get_filename_from_syspath.
-
-    DATA lv_filename TYPE string.
-
-    lv_filename = lcl_path=>get_filename_from_syspath( 'file.txt' ).
-    assert_equals( act = lv_filename exp = 'file.txt' ).
-
-    lv_filename = lcl_path=>get_filename_from_syspath( 'c:\dir\file.txt' ).
-    assert_equals( act = lv_filename exp = 'file.txt' ).
-
-    lv_filename = lcl_path=>get_filename_from_syspath( 'c:\file.txt' ).
-    assert_equals( act = lv_filename exp = 'file.txt' ).
-
-    lv_filename = lcl_path=>get_filename_from_syspath( '/dir/file.txt' ).
-    assert_equals( act = lv_filename exp = 'file.txt' ).
-
-    lv_filename = lcl_path=>get_filename_from_syspath( '/file.txt' ).
-    assert_equals( act = lv_filename exp = 'file.txt' ).
-
-    lv_filename = lcl_path=>get_filename_from_syspath( '\\server$\file.txt' ).
-    assert_equals( act = lv_filename exp = 'file.txt' ).
-
-    lv_filename = lcl_path=>get_filename_from_syspath(
-      'C:\foo\bar\moo.boo\dev\qas\_blah\goog\muuh\sap\hello\world\lorem\ipsum\s_foo.gif' ).
-    assert_equals( act = lv_filename exp = 's_foo.gif' ).
-
-  ENDMETHOD.  " get_filename_from_syspath.
-
-ENDCLASS.   "ltcl_path
-
 CLASS ltcl_file_status DEFINITION FOR TESTING RISK LEVEL HARMLESS
   DURATION SHORT FINAL
   INHERITING FROM cl_aunit_assert.
@@ -56208,5 +56060,5 @@ AT SELECTION-SCREEN.
   ENDIF.
 
 ****************************************************
-* abapmerge - 2018-01-07T13:47:32.929Z
+* abapmerge - 2018-01-07T14:00:31.595Z
 ****************************************************
