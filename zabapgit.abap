@@ -99,6 +99,7 @@ CLASS zcx_abapgit_not_found IMPLEMENTATION.
 ENDCLASS.
 
 CLASS zcl_abapgit_convert DEFINITION DEFERRED.
+CLASS zcl_abapgit_hash DEFINITION DEFERRED.
 CLASS zcl_abapgit_language DEFINITION DEFERRED.
 CLASS zcl_abapgit_state DEFINITION DEFERRED.
 CLASS zcl_abapgit_time DEFINITION DEFERRED.
@@ -424,6 +425,28 @@ CLASS zcl_abapgit_convert DEFINITION
         !iv_string      TYPE string
       RETURNING
         VALUE(rt_lines) TYPE string_table .
+ENDCLASS.
+CLASS zcl_abapgit_hash DEFINITION
+  CREATE PUBLIC .
+
+  PUBLIC SECTION.
+    TYPES: ty_adler32 TYPE x LENGTH 4.
+
+    CLASS-METHODS adler32
+      IMPORTING iv_xstring         TYPE xstring
+      RETURNING VALUE(rv_checksum) TYPE ty_adler32.
+
+    CLASS-METHODS sha1
+      IMPORTING iv_type        TYPE zif_abapgit_definitions=>ty_type
+                iv_data        TYPE xstring
+      RETURNING VALUE(rv_sha1) TYPE zif_abapgit_definitions=>ty_sha1
+      RAISING   zcx_abapgit_exception.
+
+    CLASS-METHODS sha1_raw
+      IMPORTING iv_data        TYPE xstring
+      RETURNING VALUE(rv_sha1) TYPE zif_abapgit_definitions=>ty_sha1
+      RAISING   zcx_abapgit_exception.
+
 ENDCLASS.
 *----------------------------------------------------------------------*
 * This helper class is used to set and restore the current language.
@@ -822,6 +845,106 @@ CLASS ZCL_ABAPGIT_CONVERT IMPLEMENTATION.
     ENDDO.
 
   ENDMETHOD.                    "x_to_bitbyte
+ENDCLASS.
+
+CLASS ZCL_ABAPGIT_HASH IMPLEMENTATION.
+
+
+  METHOD adler32.
+
+    CONSTANTS: lc_adler TYPE i VALUE 65521,
+               lc_max_b TYPE i VALUE 1800000000.
+
+    DATA: lv_index TYPE i,
+          lv_a     TYPE i VALUE 1,
+          lv_b     TYPE i VALUE 0,
+          lv_x     TYPE x LENGTH 2,
+          lv_ca    TYPE c LENGTH 4,
+          lv_cb    TYPE c LENGTH 4,
+          lv_char8 TYPE c LENGTH 8.
+
+
+    DO xstrlen( iv_xstring ) TIMES.
+      lv_index = sy-index - 1.
+
+      lv_a = lv_a + iv_xstring+lv_index(1).
+      lv_b = lv_b + lv_a.
+
+* delay the MOD operation until the integer might overflow
+* articles describe 5552 additions are allowed, but this assumes unsigned integers
+* instead of allowing a fixed number of additions before running MOD, then
+* just compare value of lv_b, this is 1 operation less than comparing and adding
+      IF lv_b > lc_max_b.
+        lv_a = lv_a MOD lc_adler.
+        lv_b = lv_b MOD lc_adler.
+      ENDIF.
+    ENDDO.
+
+    lv_a = lv_a MOD lc_adler.
+    lv_b = lv_b MOD lc_adler.
+
+    lv_x = lv_a.
+    lv_ca = lv_x.
+
+    lv_x = lv_b.
+    lv_cb = lv_x.
+
+    CONCATENATE lv_cb lv_ca INTO lv_char8.
+
+    rv_checksum = lv_char8.
+
+  ENDMETHOD.                                                "adler32
+
+
+  METHOD sha1.
+
+    DATA: lv_len     TYPE i,
+          lv_char10  TYPE c LENGTH 10,
+          lv_string  TYPE string,
+          lv_xstring TYPE xstring.
+
+
+    lv_len = xstrlen( iv_data ).
+    lv_char10 = lv_len.
+    CONDENSE lv_char10.
+    CONCATENATE iv_type lv_char10 INTO lv_string SEPARATED BY space.
+    lv_xstring = zcl_abapgit_convert=>string_to_xstring_utf8( lv_string ).
+
+    lv_string = lv_xstring.
+    CONCATENATE lv_string '00' INTO lv_string.
+    lv_xstring = lv_string.
+
+    CONCATENATE lv_xstring iv_data INTO lv_xstring IN BYTE MODE.
+
+    rv_sha1 = sha1_raw( lv_xstring ).
+
+  ENDMETHOD.                                                "sha1
+
+
+  METHOD sha1_raw.
+
+    DATA: lv_hash TYPE hash160.
+
+
+    CALL FUNCTION 'CALCULATE_HASH_FOR_RAW'
+      EXPORTING
+        data           = iv_data
+      IMPORTING
+        hash           = lv_hash
+      EXCEPTIONS
+        unknown_alg    = 1
+        param_error    = 2
+        internal_error = 3
+        OTHERS         = 4.
+    IF sy-subrc <> 0.
+      zcx_abapgit_exception=>raise( 'Error while calculating SHA1' ).
+    ENDIF.
+
+    rv_sha1 = lv_hash.
+
+    TRANSLATE rv_sha1 TO LOWER CASE.
+
+  ENDMETHOD.                                                "sha1_raw
 ENDCLASS.
 
 CLASS zcl_abapgit_language IMPLEMENTATION.
@@ -3011,136 +3134,6 @@ ENDCLASS. "lcl_html_toolbar IMPLEMENTATION
 *&  Include           ZABAPGIT_UTIL
 *&---------------------------------------------------------------------*
 
-*----------------------------------------------------------------------*
-*       CLASS lcl_hash DEFINITION
-*----------------------------------------------------------------------*
-*
-*----------------------------------------------------------------------*
-CLASS lcl_hash DEFINITION FINAL.
-
-  PUBLIC SECTION.
-    TYPES: ty_adler32 TYPE x LENGTH 4.
-
-    CLASS-METHODS adler32
-      IMPORTING iv_xstring         TYPE xstring
-      RETURNING VALUE(rv_checksum) TYPE ty_adler32.
-
-    CLASS-METHODS sha1
-      IMPORTING iv_type        TYPE zif_abapgit_definitions=>ty_type
-                iv_data        TYPE xstring
-      RETURNING VALUE(rv_sha1) TYPE zif_abapgit_definitions=>ty_sha1
-      RAISING   zcx_abapgit_exception.
-
-    CLASS-METHODS sha1_raw
-      IMPORTING iv_data        TYPE xstring
-      RETURNING VALUE(rv_sha1) TYPE zif_abapgit_definitions=>ty_sha1
-      RAISING   zcx_abapgit_exception.
-
-ENDCLASS.                    "lcl_hash DEFINITION
-
-*----------------------------------------------------------------------*
-*       CLASS lcl_hash IMPLEMENTATION
-*----------------------------------------------------------------------*
-*
-*----------------------------------------------------------------------*
-CLASS lcl_hash IMPLEMENTATION.
-
-  METHOD adler32.
-
-    CONSTANTS: lc_adler TYPE i VALUE 65521,
-               lc_max_b TYPE i VALUE 1800000000.
-
-    DATA: lv_index TYPE i,
-          lv_a     TYPE i VALUE 1,
-          lv_b     TYPE i VALUE 0,
-          lv_x     TYPE x LENGTH 2,
-          lv_ca    TYPE c LENGTH 4,
-          lv_cb    TYPE c LENGTH 4,
-          lv_char8 TYPE c LENGTH 8.
-
-
-    DO xstrlen( iv_xstring ) TIMES.
-      lv_index = sy-index - 1.
-
-      lv_a = lv_a + iv_xstring+lv_index(1).
-      lv_b = lv_b + lv_a.
-
-* delay the MOD operation until the integer might overflow
-* articles describe 5552 additions are allowed, but this assumes unsigned integers
-* instead of allowing a fixed number of additions before running MOD, then
-* just compare value of lv_b, this is 1 operation less than comparing and adding
-      IF lv_b > lc_max_b.
-        lv_a = lv_a MOD lc_adler.
-        lv_b = lv_b MOD lc_adler.
-      ENDIF.
-    ENDDO.
-
-    lv_a = lv_a MOD lc_adler.
-    lv_b = lv_b MOD lc_adler.
-
-    lv_x = lv_a.
-    lv_ca = lv_x.
-
-    lv_x = lv_b.
-    lv_cb = lv_x.
-
-    CONCATENATE lv_cb lv_ca INTO lv_char8.
-
-    rv_checksum = lv_char8.
-
-  ENDMETHOD.                                                "adler32
-
-  METHOD sha1_raw.
-
-    DATA: lv_hash TYPE hash160.
-
-
-    CALL FUNCTION 'CALCULATE_HASH_FOR_RAW'
-      EXPORTING
-        data           = iv_data
-      IMPORTING
-        hash           = lv_hash
-      EXCEPTIONS
-        unknown_alg    = 1
-        param_error    = 2
-        internal_error = 3
-        OTHERS         = 4.
-    IF sy-subrc <> 0.
-      zcx_abapgit_exception=>raise( 'Error while calculating SHA1' ).
-    ENDIF.
-
-    rv_sha1 = lv_hash.
-
-    TRANSLATE rv_sha1 TO LOWER CASE.
-
-  ENDMETHOD.                                                "sha1_raw
-
-  METHOD sha1.
-
-    DATA: lv_len     TYPE i,
-          lv_char10  TYPE c LENGTH 10,
-          lv_string  TYPE string,
-          lv_xstring TYPE xstring.
-
-
-    lv_len = xstrlen( iv_data ).
-    lv_char10 = lv_len.
-    CONDENSE lv_char10.
-    CONCATENATE iv_type lv_char10 INTO lv_string SEPARATED BY space.
-    lv_xstring = zcl_abapgit_convert=>string_to_xstring_utf8( lv_string ).
-
-    lv_string = lv_xstring.
-    CONCATENATE lv_string '00' INTO lv_string.
-    lv_xstring = lv_string.
-
-    CONCATENATE lv_xstring iv_data INTO lv_xstring IN BYTE MODE.
-
-    rv_sha1 = sha1_raw( lv_xstring ).
-
-  ENDMETHOD.                                                "sha1
-
-ENDCLASS.                    "lcl_hash IMPLEMENTATION
-
 CLASS lcl_path DEFINITION FINAL.
 
   PUBLIC SECTION.
@@ -4688,8 +4681,8 @@ CLASS lcl_dot_abapgit IMPLEMENTATION.
 
     rs_signature-path     = zif_abapgit_definitions=>gc_root_dir.
     rs_signature-filename = zif_abapgit_definitions=>gc_dot_abapgit.
-    rs_signature-sha1     = lcl_hash=>sha1( iv_type = zif_abapgit_definitions=>gc_type-blob
-                                            iv_data = serialize( ) ).
+    rs_signature-sha1     = zcl_abapgit_hash=>sha1( iv_type = zif_abapgit_definitions=>gc_type-blob
+                                                    iv_data = serialize( ) ).
 
   ENDMETHOD. "get_signature
 
@@ -11498,7 +11491,7 @@ CLASS lcl_git_pack IMPLEMENTATION.
 
     ENDWHILE.
 
-    lv_sha1 = lcl_hash=>sha1( iv_type = <ls_object>-type iv_data = lv_result ).
+    lv_sha1 = zcl_abapgit_hash=>sha1( iv_type = <ls_object>-type iv_data = lv_result ).
 
     CLEAR ls_object.
     ls_object-sha1 = lv_sha1.
@@ -11587,7 +11580,7 @@ CLASS lcl_git_pack IMPLEMENTATION.
 
     DATA: ls_data           TYPE lcl_zlib=>ty_decompress,
           lv_compressed_len TYPE i,
-          lv_adler32        TYPE lcl_hash=>ty_adler32.
+          lv_adler32        TYPE zcl_abapgit_hash=>ty_adler32.
 
 
     ls_data = lcl_zlib=>decompress( cv_data ).
@@ -11600,7 +11593,7 @@ CLASS lcl_git_pack IMPLEMENTATION.
 
     cv_data = cv_data+lv_compressed_len.
 
-    lv_adler32 = lcl_hash=>adler32( cv_decompressed ).
+    lv_adler32 = zcl_abapgit_hash=>adler32( cv_decompressed ).
     IF cv_data(4) <> lv_adler32.
       cv_data = cv_data+1.
     ENDIF.
@@ -11719,7 +11712,7 @@ CLASS lcl_git_pack IMPLEMENTATION.
         ls_object-sha1 = lv_ref_delta.
         TRANSLATE ls_object-sha1 TO LOWER CASE.
       ELSE.
-        ls_object-sha1 = lcl_hash=>sha1(
+        ls_object-sha1 = zcl_abapgit_hash=>sha1(
           iv_type = lv_type
           iv_data = lv_decompressed ).
       ENDIF.
@@ -11731,7 +11724,7 @@ CLASS lcl_git_pack IMPLEMENTATION.
 * check SHA1 at end of pack
     lv_len = xstrlen( iv_data ) - 20.
     lv_xstring = iv_data(lv_len).
-    lv_sha1 = lcl_hash=>sha1_raw( lv_xstring ).
+    lv_sha1 = zcl_abapgit_hash=>sha1_raw( lv_xstring ).
     IF to_upper( lv_sha1 ) <> lv_data.
       zcx_abapgit_exception=>raise( 'SHA1 at end of pack doesnt match' ).
     ENDIF.
@@ -11743,7 +11736,7 @@ CLASS lcl_git_pack IMPLEMENTATION.
   METHOD encode.
 
     DATA: lv_sha1              TYPE x LENGTH 20,
-          lv_adler32           TYPE lcl_hash=>ty_adler32,
+          lv_adler32           TYPE zcl_abapgit_hash=>ty_adler32,
           lv_compressed        TYPE xstring,
           lv_xstring           TYPE xstring,
           lv_objects_total     TYPE i,
@@ -11781,12 +11774,12 @@ CLASS lcl_git_pack IMPLEMENTATION.
 
       CONCATENATE rv_data c_zlib lv_compressed INTO rv_data IN BYTE MODE.
 
-      lv_adler32 = lcl_hash=>adler32( <ls_object>-data ).
+      lv_adler32 = zcl_abapgit_hash=>adler32( <ls_object>-data ).
       CONCATENATE rv_data lv_adler32 INTO rv_data IN BYTE MODE.
 
     ENDLOOP.
 
-    lv_sha1 = to_upper( lcl_hash=>sha1_raw( rv_data ) ).
+    lv_sha1 = to_upper( zcl_abapgit_hash=>sha1_raw( rv_data ) ).
     CONCATENATE rv_data lv_sha1 INTO rv_data IN BYTE MODE.
 
   ENDMETHOD.                    "encode
@@ -11953,7 +11946,7 @@ CLASS lcl_git_porcelain IMPLEMENTATION.
     lv_commit = lcl_git_pack=>encode_commit( ls_commit ).
 
     CLEAR ls_object.
-    ls_object-sha1 = lcl_hash=>sha1( iv_type = zif_abapgit_definitions=>gc_type-commit iv_data = lv_commit ).
+    ls_object-sha1 = zcl_abapgit_hash=>sha1( iv_type = zif_abapgit_definitions=>gc_type-commit iv_data = lv_commit ).
     ls_object-type = zif_abapgit_definitions=>gc_type-commit.
     ls_object-data = lv_commit.
     APPEND ls_object TO lt_objects.
@@ -11976,7 +11969,9 @@ CLASS lcl_git_porcelain IMPLEMENTATION.
 
     LOOP AT it_blobs ASSIGNING <ls_blob>.
       CLEAR ls_object.
-      ls_object-sha1 = lcl_hash=>sha1( iv_type = zif_abapgit_definitions=>gc_type-blob iv_data = <ls_blob>-data ).
+      ls_object-sha1 = zcl_abapgit_hash=>sha1(
+        iv_type = zif_abapgit_definitions=>gc_type-blob
+        iv_data = <ls_blob>-data ).
 
       READ TABLE lt_objects WITH KEY type = zif_abapgit_definitions=>gc_type-blob sha1 = ls_object-sha1
         TRANSPORTING NO FIELDS.
@@ -11993,7 +11988,7 @@ CLASS lcl_git_porcelain IMPLEMENTATION.
 
     lv_pack = lcl_git_pack=>encode( lt_objects ).
 
-    rv_branch = lcl_hash=>sha1(
+    rv_branch = zcl_abapgit_hash=>sha1(
       iv_type = zif_abapgit_definitions=>gc_type-commit
       iv_data = lv_commit ).
 
@@ -12153,8 +12148,8 @@ CLASS lcl_git_porcelain IMPLEMENTATION.
             <ls_exp>-chmod = zif_abapgit_definitions=>gc_chmod-file.
           ENDIF.
 
-          lv_sha1 = lcl_hash=>sha1( iv_type = zif_abapgit_definitions=>gc_type-blob
-                                    iv_data = <ls_stage>-file-data ).
+          lv_sha1 = zcl_abapgit_hash=>sha1( iv_type = zif_abapgit_definitions=>gc_type-blob
+                                            iv_data = <ls_stage>-file-data ).
           IF <ls_exp>-sha1 <> lv_sha1.
             <ls_exp>-sha1 = lv_sha1.
           ENDIF.
@@ -12357,7 +12352,7 @@ CLASS lcl_git_porcelain IMPLEMENTATION.
       CLEAR ls_tree.
       ls_tree-path = <ls_folder>-path.
       ls_tree-data = lcl_git_pack=>encode_tree( lt_nodes ).
-      ls_tree-sha1 = lcl_hash=>sha1( iv_type = zif_abapgit_definitions=>gc_type-tree iv_data = ls_tree-data ).
+      ls_tree-sha1 = zcl_abapgit_hash=>sha1( iv_type = zif_abapgit_definitions=>gc_type-tree iv_data = ls_tree-data ).
       APPEND ls_tree TO rt_trees.
 
       <ls_folder>-sha1 = ls_tree-sha1.
@@ -14976,7 +14971,7 @@ CLASS lcl_tadir IMPLEMENTATION.
         no_authority      = 4
         OTHERS            = 5 ).
     IF sy-subrc = 0.
-      rv_hash = lcl_hash=>sha1_raw( zcl_abapgit_convert=>string_to_xstring_utf8( lv_url ) ).
+      rv_hash = zcl_abapgit_hash=>sha1_raw( zcl_abapgit_convert=>string_to_xstring_utf8( lv_url ) ).
     ENDIF.
 
   ENDMETHOD.
@@ -17101,8 +17096,8 @@ CLASS lcl_zip IMPLEMENTATION.
 
       <ls_file>-data = lv_data.
 
-      <ls_file>-sha1 = lcl_hash=>sha1( iv_type = zif_abapgit_definitions=>gc_type-blob
-                                       iv_data = <ls_file>-data ).
+      <ls_file>-sha1 = zcl_abapgit_hash=>sha1( iv_type = zif_abapgit_definitions=>gc_type-blob
+                                               iv_data = <ls_file>-data ).
 
     ENDLOOP.
 
@@ -39938,8 +39933,8 @@ CLASS lcl_repo IMPLEMENTATION.
     <ls_return>-file-path     = zif_abapgit_definitions=>gc_root_dir.
     <ls_return>-file-filename = zif_abapgit_definitions=>gc_dot_abapgit.
     <ls_return>-file-data     = get_dot_abapgit( )->serialize( ).
-    <ls_return>-file-sha1     = lcl_hash=>sha1( iv_type = zif_abapgit_definitions=>gc_type-blob
-                                                iv_data = <ls_return>-file-data ).
+    <ls_return>-file-sha1     = zcl_abapgit_hash=>sha1( iv_type = zif_abapgit_definitions=>gc_type-blob
+                                                        iv_data = <ls_return>-file-data ).
 
     lt_cache = mt_local.
     lt_tadir = lcl_tadir=>read(
@@ -39992,7 +39987,9 @@ CLASS lcl_repo IMPLEMENTATION.
         io_log      = io_log ).
       LOOP AT lt_files ASSIGNING <ls_file>.
         <ls_file>-path = <ls_tadir>-path.
-        <ls_file>-sha1 = lcl_hash=>sha1( iv_type = zif_abapgit_definitions=>gc_type-blob iv_data = <ls_file>-data ).
+        <ls_file>-sha1 = zcl_abapgit_hash=>sha1(
+          iv_type = zif_abapgit_definitions=>gc_type-blob
+          iv_data = <ls_file>-data ).
 
         APPEND INITIAL LINE TO rt_files ASSIGNING <ls_return>.
         <ls_return>-file = <ls_file>.
@@ -52643,7 +52640,7 @@ CLASS ltcl_git_pack IMPLEMENTATION.
 * blob
     lv_data = lc_data.
     CLEAR ls_object.
-    ls_object-sha1 = lcl_hash=>sha1( iv_type = zif_abapgit_definitions=>gc_type-blob iv_data = lv_data ).
+    ls_object-sha1 = zcl_abapgit_hash=>sha1( iv_type = zif_abapgit_definitions=>gc_type-blob iv_data = lv_data ).
     ls_object-type = zif_abapgit_definitions=>gc_type-blob.
     ls_object-data = lv_data.
     APPEND ls_object TO lt_objects.
@@ -52657,7 +52654,7 @@ CLASS ltcl_git_pack IMPLEMENTATION.
     ls_commit-body      = 'body'.
     lv_data = lcl_git_pack=>encode_commit( ls_commit ).
     CLEAR ls_object.
-    ls_object-sha1 = lcl_hash=>sha1( iv_type = zif_abapgit_definitions=>gc_type-commit iv_data = lv_data ).
+    ls_object-sha1 = zcl_abapgit_hash=>sha1( iv_type = zif_abapgit_definitions=>gc_type-commit iv_data = lv_data ).
     ls_object-type = zif_abapgit_definitions=>gc_type-commit.
     ls_object-data = lv_data.
     APPEND ls_object TO lt_objects.
@@ -52670,7 +52667,7 @@ CLASS ltcl_git_pack IMPLEMENTATION.
     APPEND ls_node TO lt_nodes.
     lv_data = lcl_git_pack=>encode_tree( lt_nodes ).
     CLEAR ls_object.
-    ls_object-sha1 = lcl_hash=>sha1( iv_type = zif_abapgit_definitions=>gc_type-tree iv_data = lv_data ).
+    ls_object-sha1 = zcl_abapgit_hash=>sha1( iv_type = zif_abapgit_definitions=>gc_type-tree iv_data = lv_data ).
     ls_object-type = zif_abapgit_definitions=>gc_type-tree.
     ls_object-data = lv_data.
     APPEND ls_object TO lt_objects.
@@ -52688,8 +52685,8 @@ CLASS ltcl_git_pack IMPLEMENTATION.
 
   METHOD object_blob.
 
-    rs_object-sha1 = lcl_hash=>sha1( iv_type = zif_abapgit_definitions=>gc_type-blob
-                                     iv_data = iv_data ).
+    rs_object-sha1 = zcl_abapgit_hash=>sha1( iv_type = zif_abapgit_definitions=>gc_type-blob
+                                             iv_data = iv_data ).
     rs_object-type = zif_abapgit_definitions=>gc_type-blob.
     rs_object-data = iv_data.
 
@@ -56260,5 +56257,5 @@ AT SELECTION-SCREEN.
   ENDIF.
 
 ****************************************************
-* abapmerge - 2018-01-07T12:56:45.824Z
+* abapmerge - 2018-01-07T13:29:03.991Z
 ****************************************************
