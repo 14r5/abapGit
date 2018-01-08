@@ -103,6 +103,7 @@ CLASS zcl_abapgit_convert DEFINITION DEFERRED.
 CLASS zcl_abapgit_diff DEFINITION DEFERRED.
 CLASS zcl_abapgit_hash DEFINITION DEFERRED.
 CLASS zcl_abapgit_language DEFINITION DEFERRED.
+CLASS zcl_abapgit_log DEFINITION DEFERRED.
 CLASS zcl_abapgit_path DEFINITION DEFERRED.
 CLASS zcl_abapgit_state DEFINITION DEFERRED.
 CLASS zcl_abapgit_time DEFINITION DEFERRED.
@@ -638,6 +639,35 @@ CLASS zcl_abapgit_language DEFINITION
           !iv_language TYPE langu.
 
 ENDCLASS.
+CLASS zcl_abapgit_log DEFINITION CREATE PUBLIC.
+
+  PUBLIC SECTION.
+    METHODS:
+      add
+        IMPORTING
+          iv_msg  TYPE csequence
+          iv_type TYPE symsgty   DEFAULT 'E'
+          iv_rc   TYPE balsort   OPTIONAL,
+      count
+        RETURNING VALUE(rv_count) TYPE i,
+      to_html
+        RETURNING VALUE(ro_html) TYPE REF TO zcl_abapgit_html,
+      clear,
+      has_rc "For unit tests mainly
+        IMPORTING iv_rc         TYPE balsort
+        RETURNING VALUE(rv_yes) TYPE abap_bool,
+      show.
+
+  PRIVATE SECTION.
+    TYPES: BEGIN OF ty_log,
+             msg  TYPE string,
+             type TYPE symsgty,
+             rc   TYPE balsort,
+           END OF ty_log.
+
+    DATA: mt_log TYPE STANDARD TABLE OF ty_log WITH DEFAULT KEY.
+
+ENDCLASS.
 CLASS zcl_abapgit_path DEFINITION
   CREATE PUBLIC .
 
@@ -699,43 +729,38 @@ CLASS zcl_abapgit_url DEFINITION
 
   PUBLIC SECTION.
 
-    CLASS-METHODS:
-      host
-        IMPORTING
-          !iv_repo       TYPE string
-        RETURNING
-          VALUE(rv_host) TYPE string
-        RAISING
-          zcx_abapgit_exception,
-
-      name
-        IMPORTING
-          !iv_repo       TYPE string
-        RETURNING
-          VALUE(rv_name) TYPE string
-        RAISING
-          zcx_abapgit_exception,
-
-      path_name
-        IMPORTING
-          !iv_repo            TYPE string
-        RETURNING
-          VALUE(rv_path_name) TYPE string
-        RAISING
-          zcx_abapgit_exception .
-
+    CLASS-METHODS host
+      IMPORTING
+        !iv_repo       TYPE string
+      RETURNING
+        VALUE(rv_host) TYPE string
+      RAISING
+        zcx_abapgit_exception .
+    CLASS-METHODS name
+      IMPORTING
+        !iv_repo       TYPE string
+      RETURNING
+        VALUE(rv_name) TYPE string
+      RAISING
+        zcx_abapgit_exception .
+    CLASS-METHODS path_name
+      IMPORTING
+        !iv_repo            TYPE string
+      RETURNING
+        VALUE(rv_path_name) TYPE string
+      RAISING
+        zcx_abapgit_exception .
   PRIVATE SECTION.
-    CLASS-METHODS:
-      regex
-        IMPORTING
-          !iv_repo TYPE string
-        EXPORTING
-          !ev_host TYPE string
-          !ev_path TYPE string
-          !ev_name TYPE string
-        RAISING
-          zcx_abapgit_exception .
 
+    CLASS-METHODS regex
+      IMPORTING
+        !iv_repo TYPE string
+      EXPORTING
+        !ev_host TYPE string
+        !ev_path TYPE string
+        !ev_name TYPE string
+      RAISING
+        zcx_abapgit_exception .
 ENDCLASS.
 CLASS zcl_abapgit_xml DEFINITION
   ABSTRACT
@@ -2020,6 +2045,98 @@ CLASS zcl_abapgit_language IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 
+CLASS ZCL_ABAPGIT_LOG IMPLEMENTATION.
+
+
+  METHOD add.
+
+    FIELD-SYMBOLS: <ls_log> LIKE LINE OF mt_log.
+
+    APPEND INITIAL LINE TO mt_log ASSIGNING <ls_log>.
+    <ls_log>-msg  = iv_msg.
+    <ls_log>-type = iv_type.
+    <ls_log>-rc   = iv_rc.
+
+  ENDMETHOD.
+
+
+  METHOD clear.
+    CLEAR mt_log.
+  ENDMETHOD.
+
+
+  METHOD count.
+    rv_count = lines( mt_log ).
+  ENDMETHOD.
+
+
+  METHOD has_rc.
+    READ TABLE mt_log WITH KEY rc = iv_rc TRANSPORTING NO FIELDS.
+    rv_yes = boolc( sy-subrc = 0 ).
+  ENDMETHOD.
+
+
+  METHOD show.
+* only supports showing 4 errors, but I guess this is okay
+* alternatively refactor to use method TO_HTML instead
+
+    DATA: ls_log1 LIKE LINE OF mt_log,
+          ls_log2 LIKE LINE OF mt_log,
+          ls_log3 LIKE LINE OF mt_log,
+          ls_log4 LIKE LINE OF mt_log.
+
+
+    READ TABLE mt_log INDEX 1 INTO ls_log1.
+    READ TABLE mt_log INDEX 2 INTO ls_log2.
+    READ TABLE mt_log INDEX 3 INTO ls_log3.
+    READ TABLE mt_log INDEX 4 INTO ls_log4.
+
+    CALL FUNCTION 'POPUP_TO_INFORM'
+      EXPORTING
+        titel = 'Log'
+        txt1  = ls_log1-msg
+        txt2  = ls_log2-msg
+        txt3  = ls_log3-msg
+        txt4  = ls_log4-msg.
+
+  ENDMETHOD.
+
+
+  METHOD to_html.
+
+    DATA: lv_class TYPE string,
+          lv_icon  TYPE string.
+
+    FIELD-SYMBOLS: <ls_log> LIKE LINE OF mt_log.
+
+    CREATE OBJECT ro_html.
+
+    IF count( ) = 0.
+      RETURN.
+    ENDIF.
+
+    LOOP AT mt_log ASSIGNING <ls_log>.
+      CASE <ls_log>-type.
+        WHEN 'W'.
+          lv_icon  = 'alert'.
+          lv_class = 'warning'.
+        WHEN 'E'.
+          lv_icon  = 'flame'.
+          lv_class = 'error'.
+        WHEN OTHERS. " ??? unexpected
+          lv_icon  = 'flame'.
+          lv_class = 'error'.
+      ENDCASE.
+
+      ro_html->add( |<span class="{ lv_class }">| ).
+      ro_html->add_icon( iv_name = lv_icon ).
+      ro_html->add( <ls_log>-msg ).
+      ro_html->add( '</span>' ).
+    ENDLOOP.
+
+  ENDMETHOD.
+ENDCLASS.
+
 CLASS ZCL_ABAPGIT_PATH IMPLEMENTATION.
 
 
@@ -2182,7 +2299,8 @@ CLASS ZCL_ABAPGIT_TIME IMPLEMENTATION.
   ENDMETHOD.                    "get
 ENDCLASS.
 
-CLASS zcl_abapgit_url IMPLEMENTATION.
+CLASS ZCL_ABAPGIT_URL IMPLEMENTATION.
+
 
   METHOD host.
 
@@ -2191,12 +2309,14 @@ CLASS zcl_abapgit_url IMPLEMENTATION.
 
   ENDMETHOD.
 
+
   METHOD name.
 
     regex( EXPORTING iv_repo = iv_repo
            IMPORTING ev_name = rv_name ).
 
   ENDMETHOD.
+
 
   METHOD path_name.
 
@@ -2207,6 +2327,7 @@ CLASS zcl_abapgit_url IMPLEMENTATION.
 
   ENDMETHOD.
 
+
   METHOD regex.
 
     FIND REGEX '(.*://[^/]*)(.*/)([^\.]*)[\.git]?' IN iv_repo
@@ -2216,7 +2337,6 @@ CLASS zcl_abapgit_url IMPLEMENTATION.
     ENDIF.
 
   ENDMETHOD.
-
 ENDCLASS.
 
 CLASS ZCL_ABAPGIT_XML IMPLEMENTATION.
@@ -4527,123 +4647,6 @@ CLASS lcl_progress IMPLEMENTATION.
     ENDIF.
 
   ENDMETHOD.
-
-ENDCLASS.
-
-CLASS lcl_log DEFINITION FINAL.
-
-  PUBLIC SECTION.
-    METHODS:
-      add
-        IMPORTING
-          iv_msg  TYPE csequence
-          iv_type TYPE symsgty   DEFAULT 'E'
-          iv_rc   TYPE balsort   OPTIONAL,
-      count
-        RETURNING VALUE(rv_count) TYPE i,
-      to_html
-        RETURNING VALUE(ro_html) TYPE REF TO zcl_abapgit_html,
-      clear,
-      has_rc "For unit tests mainly
-        IMPORTING iv_rc         TYPE balsort
-        RETURNING VALUE(rv_yes) TYPE abap_bool,
-      show.
-
-  PRIVATE SECTION.
-    TYPES: BEGIN OF ty_log,
-             msg  TYPE string,
-             type TYPE symsgty,
-             rc   TYPE balsort,
-           END OF ty_log.
-
-    DATA: mt_log TYPE STANDARD TABLE OF ty_log WITH DEFAULT KEY.
-
-ENDCLASS.
-
-CLASS lcl_log IMPLEMENTATION.
-
-  METHOD to_html.
-
-    DATA: lv_class TYPE string,
-          lv_icon  TYPE string.
-
-    FIELD-SYMBOLS: <ls_log> LIKE LINE OF mt_log.
-
-    CREATE OBJECT ro_html.
-
-    IF count( ) = 0.
-      RETURN.
-    ENDIF.
-
-    LOOP AT mt_log ASSIGNING <ls_log>.
-      CASE <ls_log>-type.
-        WHEN 'W'.
-          lv_icon  = 'alert'.
-          lv_class = 'warning'.
-        WHEN 'E'.
-          lv_icon  = 'flame'.
-          lv_class = 'error'.
-        WHEN OTHERS. " ??? unexpected
-          lv_icon  = 'flame'.
-          lv_class = 'error'.
-      ENDCASE.
-
-      ro_html->add( |<span class="{ lv_class }">| ).
-      ro_html->add_icon( iv_name = lv_icon ).
-      ro_html->add( <ls_log>-msg ).
-      ro_html->add( '</span>' ).
-    ENDLOOP.
-
-  ENDMETHOD.
-
-  METHOD add.
-
-    FIELD-SYMBOLS: <ls_log> LIKE LINE OF mt_log.
-
-    APPEND INITIAL LINE TO mt_log ASSIGNING <ls_log>.
-    <ls_log>-msg  = iv_msg.
-    <ls_log>-type = iv_type.
-    <ls_log>-rc   = iv_rc.
-
-  ENDMETHOD.
-
-  METHOD show.
-* only supports showing 4 errors, but I guess this is okay
-* alternatively refactor to use method TO_HTML instead
-
-    DATA: ls_log1 LIKE LINE OF mt_log,
-          ls_log2 LIKE LINE OF mt_log,
-          ls_log3 LIKE LINE OF mt_log,
-          ls_log4 LIKE LINE OF mt_log.
-
-
-    READ TABLE mt_log INDEX 1 INTO ls_log1.
-    READ TABLE mt_log INDEX 2 INTO ls_log2.
-    READ TABLE mt_log INDEX 3 INTO ls_log3.
-    READ TABLE mt_log INDEX 4 INTO ls_log4.
-
-    CALL FUNCTION 'POPUP_TO_INFORM'
-      EXPORTING
-        titel = 'Log'
-        txt1  = ls_log1-msg
-        txt2  = ls_log2-msg
-        txt3  = ls_log3-msg
-        txt4  = ls_log4-msg.
-
-  ENDMETHOD.
-
-  METHOD count.
-    rv_count = lines( mt_log ).
-  ENDMETHOD.
-
-  METHOD clear.
-    CLEAR mt_log.
-  ENDMETHOD.  " clear.
-
-  METHOD has_rc.
-    READ TABLE mt_log WITH KEY rc = iv_rc TRANSPORTING NO FIELDS.
-    rv_yes = boolc( sy-subrc = 0 ).
-  ENDMETHOD. "has_rc
 
 ENDCLASS.
 
@@ -8448,7 +8451,7 @@ CLASS lcl_repo DEFINITION ABSTRACT FRIENDS lcl_repo_srv.
         RETURNING VALUE(rv_name) TYPE string
         RAISING   zcx_abapgit_exception,
       get_files_local
-        IMPORTING io_log          TYPE REF TO lcl_log OPTIONAL
+        IMPORTING io_log          TYPE REF TO zcl_abapgit_log OPTIONAL
                   it_filter       TYPE scts_tadir OPTIONAL
         RETURNING VALUE(rt_files) TYPE zif_abapgit_definitions=>ty_files_item_tt
         RAISING   zcx_abapgit_exception,
@@ -8556,7 +8559,7 @@ CLASS lcl_repo_online DEFINITION INHERITING FROM lcl_repo FINAL.
         RAISING   zcx_abapgit_exception,
       deserialize REDEFINITION,
       status
-        IMPORTING io_log            TYPE REF TO lcl_log OPTIONAL
+        IMPORTING io_log            TYPE REF TO zcl_abapgit_log OPTIONAL
         RETURNING VALUE(rt_results) TYPE zif_abapgit_definitions=>ty_results_tt
         RAISING   zcx_abapgit_exception,
       reset_status,
@@ -14743,7 +14746,7 @@ CLASS lcl_objects DEFINITION FINAL.
     CLASS-METHODS serialize
       IMPORTING is_item         TYPE zif_abapgit_definitions=>ty_item
                 iv_language     TYPE spras
-                io_log          TYPE REF TO lcl_log OPTIONAL
+                io_log          TYPE REF TO zcl_abapgit_log OPTIONAL
       RETURNING VALUE(rt_files) TYPE zif_abapgit_definitions=>ty_files_tt
       RAISING   zcx_abapgit_exception.
 
@@ -14859,7 +14862,7 @@ CLASS lcl_skip_objects DEFINITION.
       skip_sadl_generated_objects
         IMPORTING
           it_tadir          TYPE zif_abapgit_definitions=>ty_tadir_tt
-          io_log            TYPE REF TO lcl_log OPTIONAL
+          io_log            TYPE REF TO zcl_abapgit_log OPTIONAL
         RETURNING
           VALUE(rt_tadir) TYPE zif_abapgit_definitions=>ty_tadir_tt.
   PRIVATE SECTION.
@@ -14879,7 +14882,7 @@ CLASS lcl_tadir DEFINITION FINAL.
         IMPORTING iv_package            TYPE tadir-devclass
                   iv_ignore_subpackages TYPE abap_bool DEFAULT abap_false
                   io_dot                TYPE REF TO zcl_abapgit_dot_abapgit OPTIONAL
-                  io_log                TYPE REF TO lcl_log OPTIONAL
+                  io_log                TYPE REF TO zcl_abapgit_log OPTIONAL
         RETURNING VALUE(rt_tadir)       TYPE zif_abapgit_definitions=>ty_tadir_tt
         RAISING   zcx_abapgit_exception,
       read_single
@@ -14915,7 +14918,7 @@ CLASS lcl_tadir DEFINITION FINAL.
                   iv_top                TYPE tadir-devclass
                   io_dot                TYPE REF TO zcl_abapgit_dot_abapgit
                   iv_ignore_subpackages TYPE abap_bool DEFAULT abap_false
-                  io_log                TYPE REF TO lcl_log OPTIONAL
+                  io_log                TYPE REF TO zcl_abapgit_log OPTIONAL
         RETURNING VALUE(rt_tadir)       TYPE zif_abapgit_definitions=>ty_tadir_tt
         RAISING   zcx_abapgit_exception.
 
@@ -15165,7 +15168,7 @@ CLASS lcl_file_status DEFINITION FINAL
 
     CLASS-METHODS status
       IMPORTING io_repo           TYPE REF TO lcl_repo
-                io_log            TYPE REF TO lcl_log OPTIONAL
+                io_log            TYPE REF TO zcl_abapgit_log OPTIONAL
       RETURNING VALUE(rt_results) TYPE zif_abapgit_definitions=>ty_results_tt
       RAISING   zcx_abapgit_exception.
 
@@ -15181,7 +15184,7 @@ CLASS lcl_file_status DEFINITION FINAL
         RETURNING VALUE(rt_results) TYPE zif_abapgit_definitions=>ty_results_tt
         RAISING   zcx_abapgit_exception,
       run_checks
-        IMPORTING io_log     TYPE REF TO lcl_log
+        IMPORTING io_log     TYPE REF TO zcl_abapgit_log
                   it_results TYPE zif_abapgit_definitions=>ty_results_tt
                   io_dot     TYPE REF TO zcl_abapgit_dot_abapgit
                   iv_top     TYPE devclass
@@ -17152,7 +17155,7 @@ CLASS lcl_zip IMPLEMENTATION.
 
   METHOD export.
 
-    DATA: lo_log TYPE REF TO lcl_log,
+    DATA: lo_log TYPE REF TO zcl_abapgit_log,
           lt_zip TYPE zif_abapgit_definitions=>ty_files_item_tt.
 
 
@@ -44623,11 +44626,11 @@ CLASS lcl_repo_content_list DEFINITION FINAL.
       RAISING   zcx_abapgit_exception.
 
     METHODS get_log
-      RETURNING VALUE(ro_log) TYPE REF TO lcl_log.
+      RETURNING VALUE(ro_log) TYPE REF TO zcl_abapgit_log.
 
   PRIVATE SECTION.
     DATA: mo_repo TYPE REF TO lcl_repo,
-          mo_log  TYPE REF TO lcl_log.
+          mo_log  TYPE REF TO zcl_abapgit_log.
 
     METHODS build_repo_items_offline
       RETURNING VALUE(rt_repo_items) TYPE tt_repo_items
@@ -46224,7 +46227,7 @@ CLASS lcl_gui_view_repo IMPLEMENTATION.
           lv_max        TYPE abap_bool,
           lv_max_str    TYPE string,
           lv_add_str    TYPE string,
-          lo_log        TYPE REF TO lcl_log.
+          lo_log        TYPE REF TO zcl_abapgit_log.
 
     FIELD-SYMBOLS <ls_item> LIKE LINE OF lt_repo_items.
 
@@ -53103,7 +53106,7 @@ CLASS ltcl_file_status2 IMPLEMENTATION.
   METHOD check.
 
     DATA: lt_results TYPE zif_abapgit_definitions=>ty_results_tt,
-          lo_log     TYPE REF TO lcl_log.
+          lo_log     TYPE REF TO zcl_abapgit_log.
 
     FIELD-SYMBOLS: <result> LIKE LINE OF lt_results.
 
@@ -55620,5 +55623,5 @@ AT SELECTION-SCREEN.
   ENDIF.
 
 ****************************************************
-* abapmerge - 2018-01-08T16:35:53.822Z
+* abapmerge - 2018-01-08T16:46:04.342Z
 ****************************************************
