@@ -112,6 +112,7 @@ CLASS zcl_abapgit_xml_output DEFINITION DEFERRED.
 CLASS zcl_abapgit_xml_pretty DEFINITION DEFERRED.
 CLASS zcl_abapgit_default_task DEFINITION DEFERRED.
 CLASS zcl_abapgit_dependencies DEFINITION DEFERRED.
+CLASS zcl_abapgit_dot_abapgit DEFINITION DEFERRED.
 CLASS zcl_abapgit_syntax_check DEFINITION DEFERRED.
 CLASS zcl_abapgit_zlib DEFINITION DEFERRED.
 CLASS zcl_abapgit_zlib_convert DEFINITION DEFERRED.
@@ -882,6 +883,104 @@ CLASS zcl_abapgit_dependencies DEFINITION
     CLASS-METHODS get_ddls_dependencies
       IMPORTING i_ddls_name          TYPE tadir-obj_name
       RETURNING VALUE(rt_dependency) TYPE tty_dedenpency.
+
+ENDCLASS.
+CLASS zcl_abapgit_dot_abapgit DEFINITION
+  CREATE PUBLIC .
+
+  PUBLIC SECTION.
+
+    TYPES:
+      BEGIN OF ty_requirement,
+        component   TYPE dlvunit,
+        min_release TYPE saprelease,
+        min_patch   TYPE sappatchlv,
+      END OF ty_requirement .
+    TYPES:
+      ty_requirement_tt TYPE STANDARD TABLE OF ty_requirement WITH DEFAULT KEY .
+    TYPES:
+      BEGIN OF ty_dot_abapgit,
+        master_language TYPE spras,
+        starting_folder TYPE string,
+        folder_logic    TYPE string,
+        ignore          TYPE STANDARD TABLE OF string WITH DEFAULT KEY,
+        requirements    TYPE ty_requirement_tt,
+      END OF ty_dot_abapgit .
+
+    CONSTANTS:
+      BEGIN OF c_folder_logic,
+        prefix TYPE string VALUE 'PREFIX',
+        full   TYPE string VALUE 'FULL',
+      END OF c_folder_logic .
+
+    CLASS-METHODS build_default
+      RETURNING
+        VALUE(ro_dot_abapgit) TYPE REF TO zcl_abapgit_dot_abapgit .
+    CLASS-METHODS deserialize
+      IMPORTING
+        !iv_xstr              TYPE xstring
+      RETURNING
+        VALUE(ro_dot_abapgit) TYPE REF TO zcl_abapgit_dot_abapgit
+      RAISING
+        zcx_abapgit_exception .
+    METHODS constructor
+      IMPORTING
+        !is_data TYPE ty_dot_abapgit .
+    METHODS serialize
+      RETURNING
+        VALUE(rv_xstr) TYPE xstring
+      RAISING
+        zcx_abapgit_exception .
+    METHODS get_data
+      RETURNING
+        VALUE(rs_data) TYPE ty_dot_abapgit .
+    METHODS add_ignore
+      IMPORTING
+        !iv_path     TYPE string
+        !iv_filename TYPE string .
+    METHODS is_ignored
+      IMPORTING
+        !iv_path          TYPE string
+        !iv_filename      TYPE string
+      RETURNING
+        VALUE(rv_ignored) TYPE abap_bool .
+    METHODS remove_ignore
+      IMPORTING
+        !iv_path     TYPE string
+        !iv_filename TYPE string .
+    METHODS get_starting_folder
+      RETURNING
+        VALUE(rv_path) TYPE string .
+    METHODS get_folder_logic
+      RETURNING
+        VALUE(rv_logic) TYPE string .
+    METHODS set_folder_logic
+      IMPORTING
+        !iv_logic TYPE string .
+    METHODS set_starting_folder
+      IMPORTING
+        !iv_path TYPE string .
+    METHODS get_master_language
+      RETURNING
+        VALUE(rv_language) TYPE spras .
+*      set_master_language
+*        IMPORTING iv_language TYPE spras,
+    METHODS get_signature
+      RETURNING
+        VALUE(rs_signature) TYPE zif_abapgit_definitions=>ty_file_signature
+      RAISING
+        zcx_abapgit_exception .
+  PRIVATE SECTION.
+    DATA: ms_data TYPE ty_dot_abapgit.
+
+    CLASS-METHODS:
+      to_xml
+        IMPORTING is_data       TYPE ty_dot_abapgit
+        RETURNING VALUE(rv_xml) TYPE string
+        RAISING   zcx_abapgit_exception,
+      from_xml
+        IMPORTING iv_xml         TYPE string
+        RETURNING VALUE(rs_data) TYPE ty_dot_abapgit.
 
 ENDCLASS.
 CLASS zcl_abapgit_syntax_check DEFINITION
@@ -2571,6 +2670,207 @@ CLASS zcl_abapgit_dependencies IMPLEMENTATION.
     ENDDO.
 
   ENDMETHOD.                    "resolve_ddic
+ENDCLASS.
+
+CLASS ZCL_ABAPGIT_DOT_ABAPGIT IMPLEMENTATION.
+
+
+  METHOD add_ignore.
+
+    DATA: lv_name TYPE string.
+
+    FIELD-SYMBOLS: <lv_ignore> LIKE LINE OF ms_data-ignore.
+
+
+    lv_name = iv_path && iv_filename.
+
+    READ TABLE ms_data-ignore FROM lv_name TRANSPORTING NO FIELDS.
+    IF sy-subrc = 0.
+      RETURN.
+    ENDIF.
+
+    APPEND INITIAL LINE TO ms_data-ignore ASSIGNING <lv_ignore>.
+    <lv_ignore> = lv_name.
+
+  ENDMETHOD.
+
+
+  METHOD build_default.
+
+    DATA: ls_data TYPE ty_dot_abapgit.
+
+
+    ls_data-master_language = sy-langu.
+    ls_data-starting_folder = '/'.
+    ls_data-folder_logic    = c_folder_logic-prefix.
+
+    APPEND '/.gitignore' TO ls_data-ignore.
+    APPEND '/LICENSE' TO ls_data-ignore.
+    APPEND '/README.md' TO ls_data-ignore.
+    APPEND '/package.json' TO ls_data-ignore.
+    APPEND '/.travis.yml' TO ls_data-ignore.
+
+    CREATE OBJECT ro_dot_abapgit
+      EXPORTING
+        is_data = ls_data.
+
+  ENDMETHOD.
+
+
+  METHOD constructor.
+    ms_data = is_data.
+  ENDMETHOD.
+
+
+  METHOD deserialize.
+
+    DATA: lv_xml  TYPE string,
+          ls_data TYPE ty_dot_abapgit.
+
+
+    lv_xml = zcl_abapgit_convert=>xstring_to_string_utf8( iv_xstr ).
+
+    ls_data = from_xml( lv_xml ).
+
+    CREATE OBJECT ro_dot_abapgit
+      EXPORTING
+        is_data = ls_data.
+
+  ENDMETHOD.
+
+
+  METHOD from_xml.
+
+    DATA: lv_xml TYPE string.
+
+    lv_xml = iv_xml.
+
+* fix downward compatibility
+    REPLACE ALL OCCURRENCES OF '<_--28C_DATA_--29>' IN lv_xml WITH '<DATA>'.
+    REPLACE ALL OCCURRENCES OF '</_--28C_DATA_--29>' IN lv_xml WITH '</DATA>'.
+
+    CALL TRANSFORMATION id
+      OPTIONS value_handling = 'accept_data_loss'
+      SOURCE XML lv_xml
+      RESULT data = rs_data ##NO_TEXT.
+
+* downward compatibility
+    IF rs_data-folder_logic IS INITIAL.
+      rs_data-folder_logic = c_folder_logic-prefix.
+    ENDIF.
+
+  ENDMETHOD.
+
+
+  METHOD get_data.
+    rs_data = ms_data.
+  ENDMETHOD.
+
+
+  METHOD get_folder_logic.
+    rv_logic = ms_data-folder_logic.
+  ENDMETHOD.
+
+
+  METHOD get_master_language.
+    rv_language = ms_data-master_language.
+  ENDMETHOD.
+
+
+  METHOD get_signature.
+
+    rs_signature-path     = zif_abapgit_definitions=>gc_root_dir.
+    rs_signature-filename = zif_abapgit_definitions=>gc_dot_abapgit.
+    rs_signature-sha1     = zcl_abapgit_hash=>sha1( iv_type = zif_abapgit_definitions=>gc_type-blob
+                                                    iv_data = serialize( ) ).
+
+  ENDMETHOD. "get_signature
+
+
+  METHOD get_starting_folder.
+    rv_path = ms_data-starting_folder.
+  ENDMETHOD.
+
+
+  METHOD is_ignored.
+
+    DATA: lv_name     TYPE string,
+          lv_starting TYPE string,
+          lv_dot      TYPE string,
+          lv_count    TYPE i,
+          lv_ignore   TYPE string.
+
+
+    lv_name = iv_path && iv_filename.
+
+    CONCATENATE ms_data-starting_folder '*' INTO lv_starting.
+    CONCATENATE '/' zif_abapgit_definitions=>gc_dot_abapgit INTO lv_dot.
+
+    LOOP AT ms_data-ignore INTO lv_ignore.
+      FIND ALL OCCURRENCES OF '/' IN lv_name MATCH COUNT lv_count.
+
+      IF lv_name CP lv_ignore
+          OR ( ms_data-starting_folder <> '/'
+          AND lv_count > 1
+          AND NOT lv_name CP lv_starting
+          AND NOT lv_name = lv_dot ).
+        rv_ignored = abap_true.
+        RETURN.
+      ENDIF.
+    ENDLOOP.
+
+  ENDMETHOD.
+
+
+  METHOD remove_ignore.
+
+    DATA: lv_name TYPE string.
+
+
+    lv_name = iv_path && iv_filename.
+
+    DELETE TABLE ms_data-ignore FROM lv_name.
+
+  ENDMETHOD.
+
+
+  METHOD serialize.
+
+    DATA: lv_xml TYPE string.
+
+    lv_xml = to_xml( ms_data ).
+
+    rv_xstr = zcl_abapgit_convert=>string_to_xstring_utf8( lv_xml ).
+
+  ENDMETHOD.
+
+
+  METHOD set_folder_logic.
+    ms_data-folder_logic = iv_logic.
+  ENDMETHOD.
+
+
+  METHOD set_starting_folder.
+    ms_data-starting_folder = iv_path.
+  ENDMETHOD.
+
+
+  METHOD to_xml.
+
+    CALL TRANSFORMATION id
+      OPTIONS initial_components = 'suppress'
+      SOURCE data = is_data
+      RESULT XML rv_xml.
+
+    rv_xml = zcl_abapgit_xml_pretty=>print( rv_xml ).
+
+    REPLACE FIRST OCCURRENCE
+      OF REGEX '<\?xml version="1\.0" encoding="[\w-]+"\?>'
+      IN rv_xml
+      WITH '<?xml version="1.0" encoding="utf-8"?>'.
+    ASSERT sy-subrc = 0.
+
+  ENDMETHOD.
 ENDCLASS.
 
 CLASS ZCL_ABAPGIT_SYNTAX_CHECK IMPLEMENTATION.
@@ -4419,271 +4719,7 @@ ENDCLASS.   "lcl_app
 *&  Include           ZABAPGIT_DOT_ABAPGIT
 *&---------------------------------------------------------------------*
 
-CLASS ltcl_dot_abapgit DEFINITION DEFERRED.
-
-CLASS lcl_dot_abapgit DEFINITION FINAL FRIENDS ltcl_dot_abapgit.
-
-  PUBLIC SECTION.
-    CONSTANTS: BEGIN OF c_folder_logic,
-                 prefix TYPE string VALUE 'PREFIX',
-                 full   TYPE string VALUE 'FULL',
-               END OF c_folder_logic.
-
-    TYPES: BEGIN OF ty_requirement,
-             component   TYPE dlvunit,
-             min_release TYPE saprelease,
-             min_patch   TYPE sappatchlv,
-           END OF ty_requirement,
-           ty_requirement_tt TYPE STANDARD TABLE OF ty_requirement WITH DEFAULT KEY,
-           BEGIN OF ty_dot_abapgit,
-             master_language TYPE spras,
-             starting_folder TYPE string,
-             folder_logic    TYPE string,
-             ignore          TYPE STANDARD TABLE OF string WITH DEFAULT KEY,
-             requirements    TYPE ty_requirement_tt,
-           END OF ty_dot_abapgit.
-
-    CLASS-METHODS:
-      build_default
-        RETURNING VALUE(ro_dot_abapgit) TYPE REF TO lcl_dot_abapgit,
-      deserialize
-        IMPORTING iv_xstr               TYPE xstring
-        RETURNING VALUE(ro_dot_abapgit) TYPE REF TO lcl_dot_abapgit
-        RAISING   zcx_abapgit_exception.
-
-    METHODS:
-      constructor
-        IMPORTING is_data TYPE ty_dot_abapgit,
-      serialize
-        RETURNING VALUE(rv_xstr) TYPE xstring
-        RAISING   zcx_abapgit_exception,
-      get_data
-        RETURNING VALUE(rs_data) TYPE ty_dot_abapgit,
-      add_ignore
-        IMPORTING iv_path     TYPE string
-                  iv_filename TYPE string,
-      is_ignored
-        IMPORTING iv_path           TYPE string
-                  iv_filename       TYPE string
-        RETURNING VALUE(rv_ignored) TYPE abap_bool,
-      remove_ignore
-        IMPORTING iv_path     TYPE string
-                  iv_filename TYPE string,
-      get_starting_folder
-        RETURNING VALUE(rv_path) TYPE string,
-      get_folder_logic
-        RETURNING VALUE(rv_logic) TYPE string,
-      set_folder_logic
-        IMPORTING iv_logic TYPE string,
-      set_starting_folder
-        IMPORTING iv_path TYPE string,
-      get_master_language
-        RETURNING VALUE(rv_language) TYPE spras,
-*      set_master_language
-*        IMPORTING iv_language TYPE spras,
-      get_signature
-        RETURNING VALUE(rs_signature) TYPE zif_abapgit_definitions=>ty_file_signature
-        RAISING   zcx_abapgit_exception.
-
-  PRIVATE SECTION.
-    DATA: ms_data TYPE ty_dot_abapgit.
-
-    CLASS-METHODS:
-      to_xml
-        IMPORTING is_data       TYPE ty_dot_abapgit
-        RETURNING VALUE(rv_xml) TYPE string
-        RAISING   zcx_abapgit_exception,
-      from_xml
-        IMPORTING iv_xml         TYPE string
-        RETURNING VALUE(rs_data) TYPE ty_dot_abapgit.
-
-ENDCLASS.
-
-CLASS lcl_dot_abapgit IMPLEMENTATION.
-
-  METHOD constructor.
-    ms_data = is_data.
-  ENDMETHOD.
-
-  METHOD deserialize.
-
-    DATA: lv_xml  TYPE string,
-          ls_data TYPE ty_dot_abapgit.
-
-
-    lv_xml = zcl_abapgit_convert=>xstring_to_string_utf8( iv_xstr ).
-
-    ls_data = from_xml( lv_xml ).
-
-    CREATE OBJECT ro_dot_abapgit
-      EXPORTING
-        is_data = ls_data.
-
-  ENDMETHOD.
-
-  METHOD serialize.
-
-    DATA: lv_xml TYPE string.
-
-    lv_xml = to_xml( ms_data ).
-
-    rv_xstr = zcl_abapgit_convert=>string_to_xstring_utf8( lv_xml ).
-
-  ENDMETHOD.
-
-  METHOD build_default.
-
-    DATA: ls_data TYPE ty_dot_abapgit.
-
-
-    ls_data-master_language = sy-langu.
-    ls_data-starting_folder = '/'.
-    ls_data-folder_logic    = c_folder_logic-prefix.
-
-    APPEND '/.gitignore' TO ls_data-ignore.
-    APPEND '/LICENSE' TO ls_data-ignore.
-    APPEND '/README.md' TO ls_data-ignore.
-    APPEND '/package.json' TO ls_data-ignore.
-    APPEND '/.travis.yml' TO ls_data-ignore.
-
-    CREATE OBJECT ro_dot_abapgit
-      EXPORTING
-        is_data = ls_data.
-
-  ENDMETHOD.
-
-  METHOD get_data.
-    rs_data = ms_data.
-  ENDMETHOD.
-
-  METHOD to_xml.
-
-    CALL TRANSFORMATION id
-      OPTIONS initial_components = 'suppress'
-      SOURCE data = is_data
-      RESULT XML rv_xml.
-
-    rv_xml = zcl_abapgit_xml_pretty=>print( rv_xml ).
-
-    REPLACE FIRST OCCURRENCE
-      OF REGEX '<\?xml version="1\.0" encoding="[\w-]+"\?>'
-      IN rv_xml
-      WITH '<?xml version="1.0" encoding="utf-8"?>'.
-    ASSERT sy-subrc = 0.
-
-  ENDMETHOD.
-
-  METHOD from_xml.
-
-    DATA: lv_xml TYPE string.
-
-    lv_xml = iv_xml.
-
-* fix downward compatibility
-    REPLACE ALL OCCURRENCES OF '<_--28C_DATA_--29>' IN lv_xml WITH '<DATA>'.
-    REPLACE ALL OCCURRENCES OF '</_--28C_DATA_--29>' IN lv_xml WITH '</DATA>'.
-
-    CALL TRANSFORMATION id
-      OPTIONS value_handling = 'accept_data_loss'
-      SOURCE XML lv_xml
-      RESULT data = rs_data ##NO_TEXT.
-
-* downward compatibility
-    IF rs_data-folder_logic IS INITIAL.
-      rs_data-folder_logic = c_folder_logic-prefix.
-    ENDIF.
-
-  ENDMETHOD.
-
-  METHOD add_ignore.
-
-    DATA: lv_name TYPE string.
-
-    FIELD-SYMBOLS: <lv_ignore> LIKE LINE OF ms_data-ignore.
-
-
-    lv_name = iv_path && iv_filename.
-
-    READ TABLE ms_data-ignore FROM lv_name TRANSPORTING NO FIELDS.
-    IF sy-subrc = 0.
-      RETURN.
-    ENDIF.
-
-    APPEND INITIAL LINE TO ms_data-ignore ASSIGNING <lv_ignore>.
-    <lv_ignore> = lv_name.
-
-  ENDMETHOD.
-
-  METHOD is_ignored.
-
-    DATA: lv_name     TYPE string,
-          lv_starting TYPE string,
-          lv_dot      TYPE string,
-          lv_count    TYPE i,
-          lv_ignore   TYPE string.
-
-
-    lv_name = iv_path && iv_filename.
-
-    CONCATENATE ms_data-starting_folder '*' INTO lv_starting.
-    CONCATENATE '/' zif_abapgit_definitions=>gc_dot_abapgit INTO lv_dot.
-
-    LOOP AT ms_data-ignore INTO lv_ignore.
-      FIND ALL OCCURRENCES OF '/' IN lv_name MATCH COUNT lv_count.
-
-      IF lv_name CP lv_ignore
-          OR ( ms_data-starting_folder <> '/'
-          AND lv_count > 1
-          AND NOT lv_name CP lv_starting
-          AND NOT lv_name = lv_dot ).
-        rv_ignored = abap_true.
-        RETURN.
-      ENDIF.
-    ENDLOOP.
-
-  ENDMETHOD.
-
-  METHOD remove_ignore.
-
-    DATA: lv_name TYPE string.
-
-
-    lv_name = iv_path && iv_filename.
-
-    DELETE TABLE ms_data-ignore FROM lv_name.
-
-  ENDMETHOD.
-
-  METHOD get_starting_folder.
-    rv_path = ms_data-starting_folder.
-  ENDMETHOD.
-
-  METHOD get_folder_logic.
-    rv_logic = ms_data-folder_logic.
-  ENDMETHOD.
-
-  METHOD set_folder_logic.
-    ms_data-folder_logic = iv_logic.
-  ENDMETHOD.
-
-  METHOD set_starting_folder.
-    ms_data-starting_folder = iv_path.
-  ENDMETHOD.
-
-  METHOD get_master_language.
-    rv_language = ms_data-master_language.
-  ENDMETHOD.
-
-  METHOD get_signature.
-
-    rs_signature-path     = zif_abapgit_definitions=>gc_root_dir.
-    rs_signature-filename = zif_abapgit_definitions=>gc_dot_abapgit.
-    rs_signature-sha1     = zcl_abapgit_hash=>sha1( iv_type = zif_abapgit_definitions=>gc_type-blob
-                                                    iv_data = serialize( ) ).
-
-  ENDMETHOD. "get_signature
-
-ENDCLASS.
+* todo, include to be deleted
 
 
 ****************************************************
@@ -4798,7 +4834,7 @@ CLASS lcl_persistence_repo DEFINITION FINAL.
              package            TYPE devclass,
              offline            TYPE sap_bool,
              local_checksums    TYPE ty_local_checksum_tt,
-             dot_abapgit        TYPE lcl_dot_abapgit=>ty_dot_abapgit,
+             dot_abapgit        TYPE zcl_abapgit_dot_abapgit=>ty_dot_abapgit,
              head_branch        TYPE string,   " HEAD symref of the repo, master branch
              write_protect      TYPE sap_bool, " Deny destructive ops: pull, switch branch ...
              ignore_subpackages TYPE sap_bool,
@@ -4849,7 +4885,7 @@ CLASS lcl_persistence_repo DEFINITION FINAL.
 
     METHODS update_dot_abapgit
       IMPORTING iv_key         TYPE ty_repo-key
-                is_dot_abapgit TYPE lcl_dot_abapgit=>ty_dot_abapgit
+                is_dot_abapgit TYPE zcl_abapgit_dot_abapgit=>ty_dot_abapgit
       RAISING   zcx_abapgit_exception.
 
     METHODS add
@@ -4858,7 +4894,7 @@ CLASS lcl_persistence_repo DEFINITION FINAL.
                 iv_branch      TYPE zif_abapgit_definitions=>ty_sha1 OPTIONAL
                 iv_package     TYPE devclass
                 iv_offline     TYPE sap_bool DEFAULT abap_false
-                is_dot_abapgit TYPE lcl_dot_abapgit=>ty_dot_abapgit
+                is_dot_abapgit TYPE zcl_abapgit_dot_abapgit=>ty_dot_abapgit
       RETURNING VALUE(rv_key)  TYPE ty_repo-key
       RAISING   zcx_abapgit_exception.
 
@@ -6923,14 +6959,14 @@ CLASS lcl_folder_logic DEFINITION.
       package_to_path
         IMPORTING
                   iv_top         TYPE devclass
-                  io_dot         TYPE REF TO lcl_dot_abapgit
+                  io_dot         TYPE REF TO zcl_abapgit_dot_abapgit
                   iv_package     TYPE devclass
         RETURNING VALUE(rv_path) TYPE string
         RAISING zcx_abapgit_exception,
       path_to_package
         IMPORTING
           iv_top                  TYPE devclass
-          io_dot                  TYPE REF TO lcl_dot_abapgit
+          io_dot                  TYPE REF TO zcl_abapgit_dot_abapgit
           iv_path                 TYPE string
           iv_create_if_not_exists TYPE abap_bool DEFAULT abap_true
           iv_local_path           TYPE abap_bool DEFAULT abap_true
@@ -6965,13 +7001,13 @@ CLASS lcl_folder_logic IMPLEMENTATION.
       SPLIT lv_path AT '/' INTO lv_new lv_path.
 
       CASE io_dot->get_folder_logic( ).
-        WHEN lcl_dot_abapgit=>c_folder_logic-full.
+        WHEN zcl_abapgit_dot_abapgit=>c_folder_logic-full.
           rv_package = lv_new.
           TRANSLATE rv_package USING '#/'.
           IF iv_top(1) = '$'.
             CONCATENATE '$' rv_package INTO rv_package.
           ENDIF.
-        WHEN lcl_dot_abapgit=>c_folder_logic-prefix.
+        WHEN zcl_abapgit_dot_abapgit=>c_folder_logic-prefix.
           CONCATENATE rv_package '_' lv_new INTO rv_package.
         WHEN OTHERS.
           ASSERT 0 = 1.
@@ -7006,12 +7042,12 @@ CLASS lcl_folder_logic IMPLEMENTATION.
         zcx_abapgit_exception=>raise( |error, expected parent package, { iv_package }| ).
       ELSE.
         CASE io_dot->get_folder_logic( ).
-          WHEN lcl_dot_abapgit=>c_folder_logic-full.
+          WHEN zcl_abapgit_dot_abapgit=>c_folder_logic-full.
             lv_len = 0.
             IF iv_package(1) = '$'.
               lv_len = 1.
             ENDIF.
-          WHEN lcl_dot_abapgit=>c_folder_logic-prefix.
+          WHEN zcl_abapgit_dot_abapgit=>c_folder_logic-prefix.
             lv_len = strlen( lv_parentcl ).
 
             IF iv_package(lv_len) <> lv_parentcl.
@@ -7075,10 +7111,10 @@ CLASS ltcl_folder_logic_helper IMPLEMENTATION.
 
     DATA: lv_path    TYPE string,
           lv_package TYPE devclass,
-          lo_dot     TYPE REF TO lcl_dot_abapgit.
+          lo_dot     TYPE REF TO zcl_abapgit_dot_abapgit.
 
 
-    lo_dot = lcl_dot_abapgit=>build_default( ).
+    lo_dot = zcl_abapgit_dot_abapgit=>build_default( ).
     lo_dot->set_starting_folder( iv_starting ).
     lo_dot->set_folder_logic( iv_logic ).
 
@@ -7172,7 +7208,7 @@ CLASS ltcl_folder_logic IMPLEMENTATION.
     ltcl_folder_logic_helper=>test(
       iv_starting = lc_src
       iv_top      = lc_top
-      iv_logic    = lcl_dot_abapgit=>c_folder_logic-prefix
+      iv_logic    = zcl_abapgit_dot_abapgit=>c_folder_logic-prefix
       iv_package  = lc_top
       iv_path     = lc_src ).
   ENDMETHOD.
@@ -7181,7 +7217,7 @@ CLASS ltcl_folder_logic IMPLEMENTATION.
     ltcl_folder_logic_helper=>test(
       iv_starting = lc_src
       iv_top      = lc_top
-      iv_logic    = lcl_dot_abapgit=>c_folder_logic-prefix
+      iv_logic    = zcl_abapgit_dot_abapgit=>c_folder_logic-prefix
       iv_package  = '$TOP_FOO'
       iv_path     = '/src/foo/' ).
   ENDMETHOD.
@@ -7192,7 +7228,7 @@ CLASS ltcl_folder_logic IMPLEMENTATION.
         ltcl_folder_logic_helper=>test(
           iv_starting = lc_src
           iv_top      = lc_top
-          iv_logic    = lcl_dot_abapgit=>c_folder_logic-prefix
+          iv_logic    = zcl_abapgit_dot_abapgit=>c_folder_logic-prefix
           iv_package  = '$FOOBAR'
           iv_path     = '/src/' ).
         cl_abap_unit_assert=>fail( 'Error expected' ).
@@ -7204,7 +7240,7 @@ CLASS ltcl_folder_logic IMPLEMENTATION.
     ltcl_folder_logic_helper=>test(
       iv_starting = lc_src
       iv_top      = lc_top
-      iv_logic    = lcl_dot_abapgit=>c_folder_logic-full
+      iv_logic    = zcl_abapgit_dot_abapgit=>c_folder_logic-full
       iv_package  = lc_top
       iv_path     = lc_src ).
   ENDMETHOD.
@@ -7213,7 +7249,7 @@ CLASS ltcl_folder_logic IMPLEMENTATION.
     ltcl_folder_logic_helper=>test(
       iv_starting = lc_src
       iv_top      = lc_top
-      iv_logic    = lcl_dot_abapgit=>c_folder_logic-full
+      iv_logic    = zcl_abapgit_dot_abapgit=>c_folder_logic-full
       iv_package  = '$TOP_FOO'
       iv_path     = '/src/top_foo/' ).
   ENDMETHOD.
@@ -7287,7 +7323,7 @@ CLASS ltcl_folder_logic_namespaces IMPLEMENTATION.
     ltcl_folder_logic_helper=>test(
       iv_starting = lc_src
       iv_top      = lc_top
-      iv_logic    = lcl_dot_abapgit=>c_folder_logic-prefix
+      iv_logic    = zcl_abapgit_dot_abapgit=>c_folder_logic-prefix
       iv_package  = lc_top
       iv_path     = lc_src ).
   ENDMETHOD.
@@ -7296,7 +7332,7 @@ CLASS ltcl_folder_logic_namespaces IMPLEMENTATION.
     ltcl_folder_logic_helper=>test(
       iv_starting = lc_src
       iv_top      = lc_top
-      iv_logic    = lcl_dot_abapgit=>c_folder_logic-prefix
+      iv_logic    = zcl_abapgit_dot_abapgit=>c_folder_logic-prefix
       iv_package  = '/TEST/TOOLS_T1'
       iv_path     = '/src/t1/' ).
   ENDMETHOD.
@@ -7305,7 +7341,7 @@ CLASS ltcl_folder_logic_namespaces IMPLEMENTATION.
     ltcl_folder_logic_helper=>test(
       iv_starting = lc_src
       iv_top      = lc_top
-      iv_logic    = lcl_dot_abapgit=>c_folder_logic-full
+      iv_logic    = zcl_abapgit_dot_abapgit=>c_folder_logic-full
       iv_package  = lc_top
       iv_path     = lc_src ).
   ENDMETHOD.
@@ -7314,7 +7350,7 @@ CLASS ltcl_folder_logic_namespaces IMPLEMENTATION.
     ltcl_folder_logic_helper=>test(
       iv_starting = lc_src
       iv_top      = lc_top
-      iv_logic    = lcl_dot_abapgit=>c_folder_logic-full
+      iv_logic    = zcl_abapgit_dot_abapgit=>c_folder_logic-full
       iv_package  = '/TEST/T1'
       iv_path     = '/src/#test#t1/' ).
   ENDMETHOD.
@@ -7356,14 +7392,14 @@ CLASS lcl_requirement_helper DEFINITION FINAL.
       "! @parameter it_requirements | The requirements to check
       "! @parameter iv_show_popup | Show popup with requirements
       "! @raising zcx_abapgit_exception | Cancelled by user or internal error
-      check_requirements IMPORTING it_requirements TYPE lcl_dot_abapgit=>ty_requirement_tt
+      check_requirements IMPORTING it_requirements TYPE zcl_abapgit_dot_abapgit=>ty_requirement_tt
                                    iv_show_popup   TYPE abap_bool DEFAULT abap_true
                          RAISING   zcx_abapgit_exception,
       "! Get a table with information about each requirement
       "! @parameter it_requirements | Requirements
       "! @parameter rt_status | Result
       "! @raising zcx_abapgit_exception | Internal error
-      get_requirement_met_status IMPORTING it_requirements  TYPE lcl_dot_abapgit=>ty_requirement_tt
+      get_requirement_met_status IMPORTING it_requirements  TYPE zcl_abapgit_dot_abapgit=>ty_requirement_tt
                                  RETURNING value(rt_status) TYPE ty_requirement_status_tt
                                  RAISING   zcx_abapgit_exception.
   PRIVATE SECTION.
@@ -7407,10 +7443,13 @@ CLASS lcl_requirement_helper IMPLEMENTATION.
   ENDMETHOD.                    "check_requirements
 
   METHOD get_requirement_met_status.
+
     DATA: lt_installed TYPE STANDARD TABLE OF cvers_sdu.
-    FIELD-SYMBOLS: <ls_requirement>    TYPE lcl_dot_abapgit=>ty_requirement,
+
+    FIELD-SYMBOLS: <ls_requirement>    TYPE zcl_abapgit_dot_abapgit=>ty_requirement,
                    <ls_status>         TYPE ty_requirement_status,
                    <ls_installed_comp> TYPE cvers_sdu.
+
 
     CALL FUNCTION 'DELIVERY_GET_INSTALLED_COMPS'
       TABLES
@@ -8422,9 +8461,9 @@ CLASS lcl_repo DEFINITION ABSTRACT FRIENDS lcl_repo_srv.
       delete
         RAISING zcx_abapgit_exception,
       get_dot_abapgit
-        RETURNING VALUE(ro_dot_abapgit) TYPE REF TO lcl_dot_abapgit,
+        RETURNING VALUE(ro_dot_abapgit) TYPE REF TO zcl_abapgit_dot_abapgit,
       set_dot_abapgit
-        IMPORTING io_dot_abapgit TYPE REF TO lcl_dot_abapgit
+        IMPORTING io_dot_abapgit TYPE REF TO zcl_abapgit_dot_abapgit
         RAISING   zcx_abapgit_exception,
       deserialize
         RAISING zcx_abapgit_exception,
@@ -8438,7 +8477,7 @@ CLASS lcl_repo DEFINITION ABSTRACT FRIENDS lcl_repo_srv.
       rebuild_local_checksums
         RAISING zcx_abapgit_exception,
       find_remote_dot_abapgit
-        RETURNING VALUE(ro_dot) TYPE REF TO lcl_dot_abapgit
+        RETURNING VALUE(ro_dot) TYPE REF TO zcl_abapgit_dot_abapgit
         RAISING   zcx_abapgit_exception,
       is_offline
         RETURNING VALUE(rv_offline) TYPE abap_bool
@@ -14830,7 +14869,7 @@ CLASS lcl_tadir DEFINITION FINAL.
       read
         IMPORTING iv_package            TYPE tadir-devclass
                   iv_ignore_subpackages TYPE abap_bool DEFAULT abap_false
-                  io_dot                TYPE REF TO lcl_dot_abapgit OPTIONAL
+                  io_dot                TYPE REF TO zcl_abapgit_dot_abapgit OPTIONAL
                   io_log                TYPE REF TO lcl_log OPTIONAL
         RETURNING VALUE(rt_tadir)       TYPE zif_abapgit_definitions=>ty_tadir_tt
         RAISING   zcx_abapgit_exception,
@@ -14865,7 +14904,7 @@ CLASS lcl_tadir DEFINITION FINAL.
       build
         IMPORTING iv_package            TYPE tadir-devclass
                   iv_top                TYPE tadir-devclass
-                  io_dot                TYPE REF TO lcl_dot_abapgit
+                  io_dot                TYPE REF TO zcl_abapgit_dot_abapgit
                   iv_ignore_subpackages TYPE abap_bool DEFAULT abap_false
                   io_log                TYPE REF TO lcl_log OPTIONAL
         RETURNING VALUE(rt_tadir)       TYPE zif_abapgit_definitions=>ty_tadir_tt
@@ -15126,7 +15165,7 @@ CLASS lcl_file_status DEFINITION FINAL
     CLASS-METHODS:
       calculate_status
         IMPORTING iv_devclass       TYPE devclass
-                  io_dot            TYPE REF TO lcl_dot_abapgit
+                  io_dot            TYPE REF TO zcl_abapgit_dot_abapgit
                   it_local          TYPE zif_abapgit_definitions=>ty_files_item_tt
                   it_remote         TYPE zif_abapgit_definitions=>ty_files_tt
                   it_cur_state      TYPE zif_abapgit_definitions=>ty_file_signatures_tt
@@ -15135,7 +15174,7 @@ CLASS lcl_file_status DEFINITION FINAL
       run_checks
         IMPORTING io_log     TYPE REF TO lcl_log
                   it_results TYPE zif_abapgit_definitions=>ty_results_tt
-                  io_dot     TYPE REF TO lcl_dot_abapgit
+                  io_dot     TYPE REF TO zcl_abapgit_dot_abapgit
                   iv_top     TYPE devclass
         RAISING   zcx_abapgit_exception,
       build_existing
@@ -15148,7 +15187,7 @@ CLASS lcl_file_status DEFINITION FINAL
         RETURNING VALUE(rs_result) TYPE zif_abapgit_definitions=>ty_result,
       build_new_remote
         IMPORTING iv_devclass      TYPE devclass
-                  io_dot           TYPE REF TO lcl_dot_abapgit
+                  io_dot           TYPE REF TO zcl_abapgit_dot_abapgit
                   is_remote        TYPE zif_abapgit_definitions=>ty_file
                   it_items         TYPE zif_abapgit_definitions=>ty_items_ts
                   it_state         TYPE zif_abapgit_definitions=>ty_file_signatures_ts
@@ -15158,7 +15197,7 @@ CLASS lcl_file_status DEFINITION FINAL
         IMPORTING iv_filename TYPE string
                   iv_path     TYPE string
                   iv_devclass TYPE devclass
-                  io_dot      TYPE REF TO lcl_dot_abapgit
+                  io_dot      TYPE REF TO zcl_abapgit_dot_abapgit
         EXPORTING es_item     TYPE zif_abapgit_definitions=>ty_item
                   ev_is_xml   TYPE abap_bool
         RAISING   zcx_abapgit_exception.
@@ -15254,7 +15293,7 @@ CLASS lcl_file_status IMPLEMENTATION.
   METHOD status.
 
     DATA: lv_index        LIKE sy-tabix,
-          lo_dot_abapgit  TYPE REF TO lcl_dot_abapgit.
+          lo_dot_abapgit  TYPE REF TO zcl_abapgit_dot_abapgit.
 
     FIELD-SYMBOLS <ls_result> LIKE LINE OF rt_results.
 
@@ -17140,7 +17179,7 @@ CLASS lcl_zip IMPLEMENTATION.
 
 
     ls_data-key = 'DUMMY'.
-    ls_data-dot_abapgit = lcl_dot_abapgit=>build_default( )->get_data( ).
+    ls_data-dot_abapgit = zcl_abapgit_dot_abapgit=>build_default( )->get_data( ).
 
     lcl_popups=>popup_package_export(
       IMPORTING
@@ -39527,7 +39566,7 @@ CLASS lcl_repo_online IMPLEMENTATION.
   METHOD handle_stage_ignore.
 
     DATA: lv_add         TYPE abap_bool,
-          lo_dot_abapgit TYPE REF TO lcl_dot_abapgit,
+          lo_dot_abapgit TYPE REF TO zcl_abapgit_dot_abapgit,
           lt_stage       TYPE lcl_stage=>ty_stage_tt.
 
     FIELD-SYMBOLS: <ls_stage> LIKE LINE OF lt_stage.
@@ -39697,7 +39736,7 @@ CLASS lcl_repo IMPLEMENTATION.
       WITH KEY path = zif_abapgit_definitions=>gc_root_dir
       filename = zif_abapgit_definitions=>gc_dot_abapgit.
     IF sy-subrc = 0.
-      ro_dot = lcl_dot_abapgit=>deserialize( <ls_remote>-data ).
+      ro_dot = zcl_abapgit_dot_abapgit=>deserialize( <ls_remote>-data ).
       set_dot_abapgit( ro_dot ).
     ENDIF.
 
@@ -39854,7 +39893,7 @@ CLASS lcl_repo IMPLEMENTATION.
   METHOD deserialize.
 
     DATA: lt_updated_files TYPE zif_abapgit_definitions=>ty_file_signatures_tt,
-          lt_requirements  TYPE STANDARD TABLE OF lcl_dot_abapgit=>ty_requirement,
+          lt_requirements  TYPE STANDARD TABLE OF zcl_abapgit_dot_abapgit=>ty_requirement,
           lx_error         TYPE REF TO zcx_abapgit_exception.
 
     find_remote_dot_abapgit( ).
@@ -40198,7 +40237,7 @@ CLASS lcl_repo_srv IMPLEMENTATION.
       iv_branch_name = iv_branch_name
       iv_package     = iv_package
       iv_offline     = abap_false
-      is_dot_abapgit = lcl_dot_abapgit=>build_default( )->get_data( ) ).
+      is_dot_abapgit = zcl_abapgit_dot_abapgit=>build_default( )->get_data( ) ).
     TRY.
         ls_repo = mo_persistence->read( lv_key ).
       CATCH zcx_abapgit_not_found.
@@ -40226,7 +40265,7 @@ CLASS lcl_repo_srv IMPLEMENTATION.
       iv_branch_name = ''
       iv_package     = iv_package
       iv_offline     = abap_true
-      is_dot_abapgit = lcl_dot_abapgit=>build_default( )->get_data( ) ).
+      is_dot_abapgit = zcl_abapgit_dot_abapgit=>build_default( )->get_data( ) ).
 
     TRY.
         ls_repo = mo_persistence->read( lv_key ).
@@ -40697,7 +40736,7 @@ CLASS lcl_transport IMPLEMENTATION.
 
     ls_data-key         = 'TZIP'.
     ls_data-package     = lv_package.
-    ls_data-dot_abapgit = lcl_dot_abapgit=>build_default( )->get_data( ).
+    ls_data-dot_abapgit = zcl_abapgit_dot_abapgit=>build_default( )->get_data( ).
 
     CREATE OBJECT lo_repo
       EXPORTING
@@ -50548,7 +50587,7 @@ CLASS lcl_gui_page_repo_sett IMPLEMENTATION.
 
   METHOD render_content.
 
-    DATA: ls_dot TYPE lcl_dot_abapgit=>ty_dot_abapgit.
+    DATA: ls_dot TYPE zcl_abapgit_dot_abapgit=>ty_dot_abapgit.
 
 
     ls_dot = mo_repo->get_dot_abapgit( )->get_data( ).
@@ -50573,7 +50612,7 @@ CLASS lcl_gui_page_repo_sett IMPLEMENTATION.
   METHOD lif_gui_page~on_event.
 
     DATA: lt_post_fields TYPE tihttpnvp,
-          lo_dot         TYPE REF TO lcl_dot_abapgit,
+          lo_dot         TYPE REF TO zcl_abapgit_dot_abapgit,
           ls_post_field  LIKE LINE OF lt_post_fields.
 
 
@@ -51641,71 +51680,6 @@ CLASS ltcl_dangerous IMPLEMENTATION.
   ENDMETHOD.                    "run
 
 ENDCLASS.                    "ltcl_dangerous IMPLEMENTATION
-
-CLASS ltcl_dot_abapgit DEFINITION FOR TESTING RISK LEVEL HARMLESS DURATION SHORT FINAL.
-
-  PRIVATE SECTION.
-    METHODS:
-      identity FOR TESTING
-        RAISING zcx_abapgit_exception,
-      ignore FOR TESTING.
-
-ENDCLASS.
-
-CLASS ltcl_dot_abapgit IMPLEMENTATION.
-
-  METHOD identity.
-
-    DATA: lo_dot    TYPE REF TO lcl_dot_abapgit,
-          ls_before TYPE lcl_dot_abapgit=>ty_dot_abapgit,
-          ls_after  TYPE lcl_dot_abapgit=>ty_dot_abapgit.
-
-
-    lo_dot = lcl_dot_abapgit=>build_default( ).
-    ls_before = lo_dot->ms_data.
-
-    lo_dot = lcl_dot_abapgit=>deserialize( lo_dot->serialize( ) ).
-    ls_after = lo_dot->ms_data.
-
-    cl_abap_unit_assert=>assert_equals(
-      act = ls_after
-      exp = ls_before ).
-
-  ENDMETHOD.
-
-  METHOD ignore.
-
-    CONSTANTS: lc_path     TYPE string VALUE '/',
-               lc_filename TYPE string VALUE 'foobar.txt'.
-
-    DATA: lv_ignored TYPE abap_bool,
-          lo_dot     TYPE REF TO lcl_dot_abapgit.
-
-
-    lo_dot = lcl_dot_abapgit=>build_default( ).
-
-    lv_ignored = lo_dot->is_ignored( iv_path = lc_path iv_filename = lc_filename ).
-    cl_abap_unit_assert=>assert_equals(
-      act = lv_ignored
-      exp = abap_false ).
-
-    lo_dot->add_ignore( iv_path = lc_path iv_filename = lc_filename ).
-
-    lv_ignored = lo_dot->is_ignored( iv_path = lc_path iv_filename = lc_filename ).
-    cl_abap_unit_assert=>assert_equals(
-      act = lv_ignored
-      exp = abap_true ).
-
-    lo_dot->remove_ignore( iv_path = lc_path iv_filename = lc_filename ).
-
-    lv_ignored = lo_dot->is_ignored( iv_path = lc_path iv_filename = lc_filename ).
-    cl_abap_unit_assert=>assert_equals(
-      act = lv_ignored
-      exp = abap_false ).
-
-  ENDMETHOD.
-
-ENDCLASS.
 
 CLASS ltcl_git_porcelain DEFINITION FOR TESTING RISK LEVEL HARMLESS DURATION SHORT FINAL.
 
@@ -53138,7 +53112,7 @@ CLASS ltcl_file_status IMPLEMENTATION.
           lt_state       TYPE zif_abapgit_definitions=>ty_file_signatures_tt,
           lt_results     TYPE zif_abapgit_definitions=>ty_results_tt,
           lt_results_exp TYPE zif_abapgit_definitions=>ty_results_tt,
-          lo_dot         TYPE REF TO lcl_dot_abapgit.
+          lo_dot         TYPE REF TO zcl_abapgit_dot_abapgit.
 
     FIELD-SYMBOLS: <local>  LIKE LINE OF lt_local,
                    <remote> LIKE LINE OF lt_remote,
@@ -53210,7 +53184,7 @@ CLASS ltcl_file_status IMPLEMENTATION.
     _append_result 'DOMA' 'XFELD'     'X'   ' '   ' '  'SUTI' '/'  'xfeld.doma.xml'.
     lt_results_exp = lt_results.
 
-    lo_dot = lcl_dot_abapgit=>build_default( ).
+    lo_dot = zcl_abapgit_dot_abapgit=>build_default( ).
 *    lo_dot->set_starting_folder( 'SRC' ).
 *    lo_dot->set_folder_logic( lcl_dot_abapgit=>c_folder_logic-prefix ).
 
@@ -53257,7 +53231,7 @@ CLASS ltcl_file_status2 IMPLEMENTATION.
 
     lcl_file_status=>run_checks( io_log     = lo_log
                                  it_results = lt_results
-                                 io_dot     = lcl_dot_abapgit=>build_default( )
+                                 io_dot     = zcl_abapgit_dot_abapgit=>build_default( )
                                  iv_top     = '$Z$' ).
 
     assert_equals( act = lo_log->count( ) exp = 0 ).
@@ -53275,7 +53249,7 @@ CLASS ltcl_file_status2 IMPLEMENTATION.
 
     lcl_file_status=>run_checks( io_log     = lo_log
                                  it_results = lt_results
-                                 io_dot     = lcl_dot_abapgit=>build_default( )
+                                 io_dot     = zcl_abapgit_dot_abapgit=>build_default( )
                                  iv_top     = '$Z$' ).
 
     " This one is not pure - incorrect path also triggers path vs package check
@@ -53295,7 +53269,7 @@ CLASS ltcl_file_status2 IMPLEMENTATION.
 
     lcl_file_status=>run_checks( io_log     = lo_log
                                  it_results = lt_results
-                                 io_dot     = lcl_dot_abapgit=>build_default( )
+                                 io_dot     = zcl_abapgit_dot_abapgit=>build_default( )
                                  iv_top     = '$Z$' ).
 
     assert_equals( act = lo_log->count( ) exp = 1 ).
@@ -53314,7 +53288,7 @@ CLASS ltcl_file_status2 IMPLEMENTATION.
 
     lcl_file_status=>run_checks( io_log     = lo_log
                                  it_results = lt_results
-                                 io_dot     = lcl_dot_abapgit=>build_default( )
+                                 io_dot     = zcl_abapgit_dot_abapgit=>build_default( )
                                  iv_top     = '$Z$' ).
 
     assert_equals( act = lo_log->count( ) exp = 1 ).
@@ -53332,7 +53306,7 @@ CLASS ltcl_file_status2 IMPLEMENTATION.
 
     lcl_file_status=>run_checks( io_log     = lo_log
                                  it_results = lt_results
-                                 io_dot     = lcl_dot_abapgit=>build_default( )
+                                 io_dot     = zcl_abapgit_dot_abapgit=>build_default( )
                                  iv_top     = '$Z$' ).
 
     assert_equals( act = lo_log->count( )
@@ -55429,7 +55403,7 @@ CLASS lcl_migrations IMPLEMENTATION.
     DATA: lt_repos       TYPE lcl_repo_srv=>ty_repo_tt,
           lv_msg         TYPE string,
           lv_shown       TYPE abap_bool,
-          lo_dot_abapgit TYPE REF TO lcl_dot_abapgit,
+          lo_dot_abapgit TYPE REF TO zcl_abapgit_dot_abapgit,
           lx_exception   TYPE REF TO zcx_abapgit_exception.
 
     FIELD-SYMBOLS: <lo_repo> LIKE LINE OF lt_repos.
@@ -55441,7 +55415,7 @@ CLASS lcl_migrations IMPLEMENTATION.
       lo_dot_abapgit = <lo_repo>->get_dot_abapgit( ).
       IF lo_dot_abapgit->get_data( ) IS INITIAL.
         IF <lo_repo>->is_offline( ) = abap_true.
-          lo_dot_abapgit = lcl_dot_abapgit=>build_default( ).
+          lo_dot_abapgit = zcl_abapgit_dot_abapgit=>build_default( ).
         ELSE.
           IF lv_shown = abap_false.
             CALL FUNCTION 'POPUP_TO_INFORM'
@@ -55471,7 +55445,7 @@ CLASS lcl_migrations IMPLEMENTATION.
 
           lo_dot_abapgit = <lo_repo>->find_remote_dot_abapgit( ).
           IF lo_dot_abapgit IS INITIAL. " .abapgit.xml is not in the remote repo yet
-            lo_dot_abapgit = lcl_dot_abapgit=>build_default( ).
+            lo_dot_abapgit = zcl_abapgit_dot_abapgit=>build_default( ).
           ENDIF.
         ENDIF.
         <lo_repo>->set_dot_abapgit( lo_dot_abapgit ).
@@ -55758,5 +55732,5 @@ AT SELECTION-SCREEN.
   ENDIF.
 
 ****************************************************
-* abapmerge - 2018-01-08T15:43:05.726Z
+* abapmerge - 2018-01-08T16:13:16.087Z
 ****************************************************
