@@ -117,7 +117,7 @@ INTERFACE zif_abapgit_definitions
   .
 
   CONSTANTS gc_xml_version TYPE string VALUE 'v1.0.0' ##NO_TEXT.
-  CONSTANTS gc_abap_version TYPE string VALUE 'v1.51.1' ##NO_TEXT.
+  CONSTANTS gc_abap_version TYPE string VALUE 'v1.51.2' ##NO_TEXT.
 
   TYPES:
     ty_type    TYPE c LENGTH 6 .
@@ -55879,5 +55879,5 @@ AT SELECTION-SCREEN.
   ENDIF.
 
 ****************************************************
-* abapmerge - 2018-01-07T14:11:07.375Z
+* abapmerge - 2018-01-08T05:15:14.951Z
 ****************************************************
